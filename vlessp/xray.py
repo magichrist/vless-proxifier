@@ -42,6 +42,27 @@ from .links import build_xray_config
 GITHUB_API = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 
+# Vendored Xray builds are deliberately NOT committed to this repo -- a 34 MB
+# stripped Go binary in permanent git history is not worth the convenience, and
+# the directories are gitignored. A local copy is still *used* when one sits
+# next to the repo, because it makes an offline run instant and skips a 40 MB
+# download.
+#
+# The catch: a vendored binary cannot be verified the way a downloaded one is,
+# since there is no upstream .dgst to check it against at runtime. So it is only
+# adopted when its SHA-256 matches a build pinned here, and an unrecognised
+# binary is silently ignored in favour of a freshly downloaded one. The
+# downloader stays the source of truth; vendoring is a cache it happens to
+# satisfy.
+_BUNDLED_SHA256 = frozenset({
+    # v26.3.27, verified against the official Xray-macos-arm64-v8a.zip.dgst
+    "5d9dd24c0aba4b6cfcc6a33a5d67f854816ee17f392bf932ec8176da46f7e404",
+})
+_BUNDLED_DIR_NAMES = (
+    "xray-macos-arm64-v8a", "xray-macos-arm64", "xray-macos-64",
+    "xray-linux-arm64-v8a", "xray-linux-64",
+)
+
 # Hosts we are willing to end up talking to after a redirect. Release metadata
 # points at github.com; the actual bytes come from the release-assets CDN.
 _DOWNLOAD_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
@@ -296,13 +317,83 @@ def wait_for_listener(process: subprocess.Popen[bytes], addresses: list[str], ti
     raise AppError(f"Xray did not open the requested local port(s) within {timeout:.0f}s ({last_error}). Check the Xray output above.")
 
 
+def repo_root() -> Path:
+    """The checkout this module lives in. Vendored binaries are looked up beside it."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _sha256_file(path: Path) -> str:
+    """Stream a file through SHA-256.
+
+    Streamed rather than read whole: the thing being hashed is a 34 MB binary,
+    and reading it into memory to compare one hash is a needless spike.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _warn_if_quarantined(path: Path) -> None:
+    """Warn when macOS will block the binary before we hand it to subprocess.
+
+    A binary that arrived through a browser carries ``com.apple.quarantine`` and
+    the kernel stops it dead -- or, worse, blocks the spawning process on a
+    Gatekeeper prompt that nobody sees when the launch came from a TUI. That
+    failure is very hard to read, so name it up front.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        result = subprocess.run(
+            ["xattr", "-p", "com.apple.quarantine", str(path)],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode == 0 and result.stdout.strip():
+        print(
+            f"note: {path.name} is quarantined and macOS may refuse to run it. Clear it with:\n"
+            f"  xattr -dr com.apple.quarantine {path.parent}",
+            file=sys.stderr,
+        )
+
+
+def bundled_xray() -> Path | None:
+    """Return a hash-verified vendored Xray beside the repo, or ``None``.
+
+    An unrecognised binary is never executed. Falling through to the downloader
+    is slower but correct, and the user is never left running something this
+    project cannot vouch for.
+    """
+    root = repo_root()
+    name = "xray.exe" if os.name == "nt" else "xray"
+    for directory in _BUNDLED_DIR_NAMES:
+        candidate = root / directory / name
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            continue
+        try:
+            if _sha256_file(candidate) not in _BUNDLED_SHA256:
+                continue
+        except OSError:
+            continue
+        _warn_if_quarantined(candidate)
+        return candidate
+    return None
+
+
 def resolve_xray(xray_arg: str | None, *, update: bool = False) -> Path:
     """Resolve the Xray executable to use, or install one.
 
-    Precedence is explicit argument, then ``XRAY_BIN``, then an automatic install
-    of the latest stable release. An explicitly named binary is never downloaded
-    over — if the user pointed at a path, that is the binary they want, and a
-    silent replacement would be a surprise.
+    Precedence is explicit argument, then ``XRAY_BIN``, then a hash-verified
+    vendored build beside the repo, then an automatic install of the latest
+    stable release. An explicitly named binary is never downloaded over — if the
+    user pointed at a path, that is the binary they want, and a silent
+    replacement would be a surprise.
+
+    ``update=True`` skips the vendored build, since the user asked to refresh
+    from upstream and honouring a stale local copy would ignore that.
 
     Takes plain values rather than an ``argparse.Namespace`` so it can be called
     (and tested) from a TUI or the profile layer with no CLI in the picture.
@@ -313,6 +404,10 @@ def resolve_xray(xray_arg: str | None, *, update: bool = False) -> Path:
         if not path.is_file() or not os.access(path, os.X_OK):
             raise AppError(f"Xray executable not found or not executable: {path}")
         return path
+    if not update:
+        bundled = bundled_xray()
+        if bundled is not None:
+            return bundled
     # Reuse installed version if one exists. For a first run, install the latest stable release.
     return install_xray(force=update)
 
@@ -421,7 +516,12 @@ class XrayProcess:
             # 1. Pure: may raise for a bad listener address, before anything exists.
             config = build_xray_config(link, self._socks_addr, self._http_addr)
             # 2. The config carries the UUID, so it gets a private directory and 0600.
-            runtime, config_path = self._write_config(config)
+            try:
+                runtime, config_path = self._write_config(config)
+            except OSError:
+                # The contract is that apply() only ever raises AppError, so an
+                # unwritable app data directory is reported in the same terms.
+                raise AppError("Could not write the private Xray runtime configuration.") from None
             try:
                 # 3. Validate first. If this raises, the old process is untouched
                 #    and still serving — the reason the ordering is this way.
@@ -431,7 +531,11 @@ class XrayProcess:
                 raise
             # 4. Only now is the working tunnel at risk.
             self.stop()
-            process = self._spawn(config_path)  # 5
+            try:
+                process = self._spawn(config_path)  # 5
+            except OSError:
+                runtime.cleanup()
+                raise AppError("Could not start the Xray process.") from None
             try:
                 # 6. Readiness gate; a timeout must not leave a process behind.
                 wait_for_listener(process, self._addresses())
@@ -462,10 +566,16 @@ class XrayProcess:
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(data_dir, 0o700)
         runtime = tempfile.TemporaryDirectory(prefix="runtime-", dir=data_dir)
-        os.chmod(runtime.name, 0o700)
-        config_path = Path(runtime.name) / "config.json"
-        config_path.write_text(json.dumps(config, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-        os.chmod(config_path, 0o600)
+        try:
+            os.chmod(runtime.name, 0o700)
+            config_path = Path(runtime.name) / "config.json"
+            config_path.write_text(json.dumps(config, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            os.chmod(config_path, 0o600)
+        except OSError:
+            # Deterministic cleanup: relying on the TemporaryDirectory finalizer
+            # would leave the directory behind until the GC got round to it.
+            runtime.cleanup()
+            raise
         return runtime, config_path
 
     def _validate(self, config_path: Path) -> None:
