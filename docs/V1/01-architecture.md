@@ -99,10 +99,19 @@ previous file intact rather than a truncated one. Directory `0700`, file `0600`.
 This is the interface D3 deliberately isolates. The TUI never talks to Xray.
 
 ```python
-class XrayProcess(Protocol):
-    def apply(self, link: dict, *, socks: str, http: str | None) -> None: ...
+class XrayProcess:
+    def __init__(self, xray_path: Path, *, socks_addr: str, http_addr: str | None) -> None: ...
+    def apply(self, link: dict[str, Any]) -> None: ...
     def stop(self) -> None: ...
+    @property
+    def running(self) -> bool: ...
+    @property
+    def last_log(self) -> str: ...
 ```
+
+Listener addresses are fixed at construction, so `apply` takes only the link to switch to. That
+keeps the call site to one argument and means a misconfigured port cannot be introduced at
+switch time.
 
 `apply` performs D7's ordered switch and raises `AppError` on failure. Today it is implemented by
 regenerating the config and respawning. A future hot-swap implementation satisfies the same

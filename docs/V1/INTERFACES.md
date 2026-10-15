@@ -241,3 +241,56 @@ unmodified) and delegate to `vlessp.cli.main`.
 6. Standard library plus `textual` (TUI agent only). No new dependencies.
 7. If the spec is ambiguous, choose, add a one-line comment saying why, and move on.
    Do not block — the integrator resolves conflicts at the end.
+
+---
+
+## Corrections found during implementation
+
+These were wrong or underspecified when the contract was written. The implementations are
+authoritative; this section records what actually shipped and why, so the next reader does not
+copy the original mistake.
+
+### Textual 8 specifics
+
+- **`push_screen_wait` does not work from an action handler.** It raises `NoActiveWorker`,
+  because only a worker can be awaited. Opening a form is not a slow operation, so all modals use
+  `push_screen(..., callback=...)` instead. The documented pattern in `02-tui-design.md` is wrong.
+- **`call_from_thread` lives on `App`, not `Screen`.** A worker inside a modal must hop through
+  `self.app.call_from_thread(...)`.
+- Cells passed to `DataTable` should be `rich.text.Text`, not `str`. Textual renders bare `str`
+  cells as markup, so a profile label containing `[red]` would be swallowed as a style tag. `rich`
+  is Textual's own rendering substrate, so this adds no dependency.
+
+### Ownership corrections
+
+- **`ProxyService` owns persisting the active profile** (`set_active` + `save` after a successful
+  `apply`). It does **not** own writing profiles — the TUI calls `store.add`/`update`/`delete`
+  directly. There is deliberately no `add_profile` method.
+- **`ProxyService.connect` cleans up after itself.** `apply` has already killed the old process by
+  the time the store is written, so a failed `save` leaves a stale `active_id` naming a node the
+  service is no longer on. Rather than leave that for each caller to notice, `connect` tears the
+  new tunnel down and re-raises. "No live child after a failed connect" is therefore an invariant
+  of the class. The alternative — keeping the tunnel and warning — was rejected because it lets
+  the next launch silently reconnect a node the user did not choose, which is the hidden
+  rerouting that D5 rejects for auto-failover.
+- **`ProxyService.current` returns `None`, never raises**, when the serving profile was deleted
+  out from under a live tunnel. A status-bar read must not throw.
+- `disconnect()` stops the process but does **not** clear `active_id`; reconnecting on next launch
+  is the point.
+
+### Where things actually live
+
+- `resolve_link` is in **`profiles.py`**, not `latency.py`.
+- `parse_vless_uri` is in **`links.py`**, not `latency.py`.
+- `VlessApp` takes optional `secrets=`, `socks_addr=`, `http_addr=`, `xray_version=` keywords. The
+  CLI **must** pass `secrets=` or add/edit/delete degrade to "no secret backend available", and
+  must pass the listener addresses or the status bar shows defaults that may be wrong.
+
+### Error surfacing
+
+`XrayProcess` captures Xray's `-test` rejection output rather than writing it to the console,
+because it runs under a TUI whose screen must not be scribbled on from a worker thread. That made
+V0's "review the preceding Xray error" message point at output the reader cannot see. The
+rejection reason is now embedded in the `AppError` itself (redacted, truncated to one line), so
+the message is self-contained in both the CLI and the TUI. The full output remains in
+`last_log`.

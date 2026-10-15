@@ -1,4 +1,3 @@
-import json
 import unittest
 
 from vless_proxy import AppError, build_xray_config, parse_vless_uri

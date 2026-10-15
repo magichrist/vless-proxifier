@@ -598,7 +598,27 @@ class XrayProcess:
         for line in output.splitlines():
             self._log.append(line)
         if test.returncode != 0:
-            raise AppError("Xray rejected the generated configuration. Review the preceding Xray error; the link itself is not printed.")
+            # The reason has to live IN the message. V0 let Xray write its rejection
+            # straight to the terminal and pointed the reader at it; that output is
+            # captured now, because this runs under a TUI whose screen must not be
+            # scribbled on from a worker thread. A message saying "review the
+            # preceding error" names output the reader cannot see.
+            raise AppError(self._rejection_reason(output))
+
+    @staticmethod
+    def _rejection_reason(output: str) -> str:
+        """Turn Xray's ``-test`` output into one self-contained, link-free sentence.
+
+        Redacted before anything is quoted: Xray echoes config fragments on some
+        parse errors, and a config fragment is a credential. The full output stays
+        in ``last_log`` for anyone who wants it.
+        """
+        lines = [_redact(line).strip() for line in output.splitlines()]
+        detail = next((line for line in reversed(lines) if line), "")
+        if len(detail) > 200:
+            detail = detail[:197] + "…"
+        base = "Xray rejected the generated configuration"
+        return f"{base}: {detail}" if detail else f"{base}, and gave no reason."
 
     def _spawn(self, config_path: Path) -> subprocess.Popen[bytes]:
         """Start Xray on the validated config and begin draining its output.

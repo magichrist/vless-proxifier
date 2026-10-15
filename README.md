@@ -1,91 +1,218 @@
-# VLESS Python Proxy
+# vlessp — a VLESS profile manager
 
-A small, standard-library-only Python CLI: paste **one** `vless://` link and receive a local SOCKS5 proxy plus an optional HTTP proxy.
+Save many `vless://` profiles, switch between them from a terminal UI, and get a local
+SOCKS5 / HTTP proxy pointing at whichever one is active.
 
-**Important architecture note:** the application, URI validation, Xray config generation, release download, SHA-256 validation, and process lifecycle are Python. The actual VLESS network engine is the official prebuilt Xray-core executable. You do not install Go, compile Go, or maintain Go source. Implementing the modern VLESS wire protocol, Xray's uTLS fingerprinting, Reality, and your `mlkem768x25519plus...` VLESS encryption setting from scratch in pure Python would be a substantially different protocol implementation and is not what this project claims to do.
+**Architecture note, stated up front.** This repository holds the *control plane*: URI
+parsing and validation, profile storage, Xray config generation, binary acquisition and
+verification, and process supervision — all Python. The actual VLESS network engine is the
+official prebuilt **Xray-core** executable. You do not install Go, build Go, or maintain Go
+source. Reimplementing the modern VLESS wire protocol, uTLS fingerprinting, Reality, and
+post-quantum VLESS encryption in pure Python would be a different protocol implementation,
+and this project does not claim to be one.
 
-## Quick start (macOS M1/M2/M3/M4)
+V1 depends on [`textual`](https://textual.textualize.io/) for the UI. It is **not**
+standard-library-only any more — that trade is recorded in
+[`docs/V1/00-decisions.md`](docs/V1/00-decisions.md) (D1) and it is the only runtime
+dependency.
 
-Requires Python 3.10+ and an internet connection on first run to download the official Xray binary.
+---
+
+## Install
+
+Requires Python 3.10+. On macOS, also needs the `security` CLI, which ships with the
+system — that is where UUIDs are stored.
+
+```bash
+# from a checkout
+pip install -e .
+
+# or just the one dependency
+pip install "textual>=1.0"
+```
+
+## Run
 
 ```bash
 python3 vless_proxy.py
 ```
 
-It prompts visibly for one complete link. On first run it:
+That launches the terminal UI. It resolves an Xray binary first (see
+[the Xray binary](#the-xray-binary)) — downloading on a first run — then shows the
+profile table.
 
-1. Detects Apple Silicon.
-2. Queries the official Xray-core GitHub API for the latest stable release.
-3. Downloads `Xray-macos-arm64-v8a.zip` and its official `.dgst` checksum file.
-4. Verifies SHA-256 before installing the executable in `~/Library/Application Support/vless-python-proxy/xray/`.
-5. Validates the generated configuration with Xray and starts local listeners.
+The first profile is added in the UI — press `a` and paste a link. The UUID is split off
+and written to the Keychain; everything else goes to `profiles.json`.
 
-No link is saved by default. The app creates a short-lived, permission-restricted runtime config in Application Support and deletes it on exit. This temporary file is necessary because Xray expects a config file.
-
-The app exposes:
-
-- SOCKS5: `127.0.0.1:10808`
-- HTTP CONNECT: `http://127.0.0.1:10809`
-
-Keep the terminal window open. Press Ctrl+C to stop.
-
-## Test from another terminal
+### Test from another terminal
 
 ```bash
 curl --socks5-hostname 127.0.0.1:10808 https://api.ipify.org
 curl --proxy http://127.0.0.1:10809 https://api.ipify.org
 ```
 
-Both should show the public IP of the VLESS egress. A proxy being bound locally is not proof the upstream is reachable; the curl tests perform the end-to-end check.
+Both should return the public IP of the VLESS egress. A bound listener is not proof the
+upstream is reachable; the curl calls are the end-to-end check.
 
-## Options
+---
+
+## The UI
+
+| Key | Action | Notes |
+|---|---|---|
+| `Enter` | Connect the highlighted profile | validates the new config before stopping the old one |
+| `a` | Add a profile | pastes a `vless://` link; masked input, preview before saving |
+| `e` | Edit a profile | non-secret fields only — the UUID is not editable here |
+| `d` | Delete a profile | asks first; removes the Keychain item too |
+| `t` | Test all | one TCP latency probe per profile, sorts the table |
+| `c` | Connect / disconnect | reconnect the last active profile, or stop |
+| `l` | Toggle the log pane | shows Xray's last output |
+| `q` | Quit | terminates Xray cleanly |
+
+Two behaviours worth knowing because they are easy to assume otherwise:
+
+- **Latency is reachability, not throughput.** `t` measures a TCP connect to each profile's
+  server. It does not measure speed through the tunnel, because that would require the proxy
+  to already be running on that profile.
+- **Nothing connects automatically.** Launching the UI does not start a tunnel, and `t` never
+  changes which profile is active. Press `Enter` or `c`.
+
+---
+
+## Command line
+
+The UI is a front end, not a replacement. Every flag below is the headless path.
 
 ```bash
-# Explicit link (less private: may be visible in process listings)
-python3 vless_proxy.py --link 'vless://...'
+# List saved profiles. Prints labels and servers; never a UUID.
+python3 vless_proxy.py --list
 
-# Link file: on macOS/Linux ensure mode 600
-chmod 600 ~/.config/vless-client/link.txt
-python3 vless_proxy.py --link-file ~/.config/vless-client/link.txt
+# Start a saved profile by label (or by id) and stay in the foreground.
+python3 vless_proxy.py --profile home
 
-# Use an existing Xray executable; no downloader needed
-python3 vless_proxy.py --xray /path/to/xray
+# One-off link, no profile saved. Visible in process listings.
+python3 vless_proxy.py --link 'vless://…'
 
-# Use SOCKS5 only
-python3 vless_proxy.py --no-http
+# Same, from a private file. Must be mode 600 on POSIX.
+chmod 600 ~/.config/vless/link.txt
+python3 vless_proxy.py --link-file ~/.config/vless/link.txt
 
-# Validate link and config but don't open listeners
-python3 vless_proxy.py --check
+# Validate a link and the generated config, open no listeners.
+python3 vless_proxy.py --check --link-file ~/.config/vless/link.txt
 
-# Refresh the cached Xray binary from the latest stable official release
-python3 vless_proxy.py --update-xray
+# Force the UI even when other flags are present.
+python3 vless_proxy.py --tui
 ```
 
-`XRAY_BIN=/path/to/xray` can also specify an existing executable. Only use Xray binaries from the official project or a source you trust.
+| Flag | Default | Meaning |
+|---|---|---|
+| `--link URI` | — | VLESS link as an argument. **Least private option**: argv is readable by other processes on the machine. |
+| `--link-file PATH` | — | Read the link from a file. Rejected on POSIX unless the file is mode `600`. |
+| `--profile ID_OR_LABEL` | — | Connect to a saved profile headlessly. |
+| `--list` | — | Print the profile table and exit. No binary is resolved and no network is touched. |
+| `--tui` | — | Force the Textual UI. The default when no link source is given. |
+| `--xray PATH` | — | Use an existing Xray executable instead of resolving one. |
+| `--socks ADDR` | `127.0.0.1:10808` | SOCKS5 listener. Loopback only. |
+| `--http ADDR` | `127.0.0.1:10809` | HTTP listener. Loopback only. |
+| `--no-http` | off | Disable the HTTP listener. |
+| `--allow-insecure` | off | Permit a link that disables TLS certificate verification. Unsafe. |
+| `--check` | off | Validate the URI and the generated config with Xray; open nothing. |
+| `--update-xray` | off | Skip the vendored copy and re-download the latest stable official release. |
+
+`XRAY_BIN=/path/to/xray` is honoured as a fallback for `--xray`.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Served until interrupted, or a successful `--check` / `--list`. Ctrl+C while serving is a success. |
+| `1` | An unexpected OS, JSON, or zip failure — the machine misbehaved. |
+| `2` | A refused request: bad link, unknown profile, identical listener ports, unwritable store. |
+| `130` | Interrupted by Ctrl+C before anything was serving. |
+
+### Not implemented
+
+No subscription refresh, no WireGuard / Hysteria2 / Trojan, no TUN or system-wide routing,
+no per-process interception, and no automatic failover. Use Proxifier or ProxyBridge pointed
+at the local SOCKS5 endpoint for app-by-app routing.
+
+---
+
+## The Xray binary
+
+Resolution order, highest first:
+
+1. `--xray PATH`
+2. `$XRAY_BIN`
+3. a vendored `xray-<platform>/xray` directory beside the repository, **only if its SHA-256
+   matches a pinned official build**
+4. download the latest stable official release and verify its SHA-256 against the upstream
+   `.dgst` file
+
+Installed binaries live in `~/Library/Application Support/vless-python-proxy/xray/<tag>/`.
+
+**The vendored copy is not committed.** 34 MB of stripped Go in permanent git history is not
+worth the convenience, so `xray-macos-arm64/` and friends are gitignored. A vendored binary
+cannot be verified the way a downloaded one is — there is no upstream `.dgst` to check it
+against at runtime — so an unrecognised hash is **ignored in favour of the downloader**, never
+executed. The downloader stays the source of truth; vendoring is a cache it happens to
+satisfy.
+
+### If macOS refuses to run it
+
+A binary downloaded through a browser carries the `com.apple.quarantine` attribute, and the
+kernel stops it — or blocks the launching process on a Gatekeeper prompt that nobody sees.
+The resolver prints a note when it detects this. The fix:
+
+```bash
+xattr -dr com.apple.quarantine xray-macos-arm64/
+```
+
+Only do this for a binary you trust. It removes the check that was protecting you.
+
+---
 
 ## Supported fields
 
-VLESS URI parsing/config translation supports `security=none|tls|reality`, `type=tcp|ws|grpc|httpupgrade|xhttp`, TLS SNI, fingerprint, ALPN, `pcs` certificate pin, VLESS `encryption`, Vision flow for supported TCP links, WebSocket `path` and `host`, gRPC service and authority, HTTP Upgrade fields, XHTTP mode and JSON `extra`, and Reality `pbk`, `sid`, `spx`.
+`security=none|tls|reality`, `type=tcp|ws|grpc|httpupgrade|xhttp`, TLS `sni`, `fp`, `alpn`,
+`pcs` certificate pins, VLESS `encryption`, Vision flow on TCP links, WebSocket `path`/`host`,
+gRPC service and authority, HTTP Upgrade fields, XHTTP `mode` and JSON `extra`, and Reality
+`pbk` / `sid` / `spx`.
 
-The user's URI parameters are not printed intentionally. TLS verification is enabled by default. A link requesting `insecure=1` is refused unless the operator explicitly passes `--allow-insecure`.
+Links are never printed — not on success, not in an error, not in a log. TLS verification is
+on by default, and a link carrying `insecure=1` is refused unless you pass
+`--allow-insecure`.
 
-This initial Python wrapper intentionally focuses on one VLESS link. It does not implement subscription refresh, WireGuard, Hysteria2, Trojan, TUN/system-wide routing, or automatic per-process interception. Use Proxifier/ProxyBridge and point them at the local SOCKS5 endpoint for app-by-app routing.
-
-## Debugging
-
-- If first-run download fails, use `--xray /absolute/path/to/xray` with a trusted Xray binary already installed.
-- If configuration validation fails, read Xray's error printed immediately before the Python error. It should not contain the VLESS URI.
-- If listeners start but curl fails, verify that the server and parameters are valid and reachable from your network.
-- Check whether ports are free: `lsof -nP -iTCP:10808 -sTCP:LISTEN`.
-- Stop with Ctrl+C.
+---
 
 ## Tests
 
-Python 3.10+ is recommended. No third-party Python packages are needed.
-
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile vless_proxy.py
 ```
 
-The tests use synthetic hostnames and fake keys; they do not connect to a real VLESS endpoint.
+237 tests. The TUI tests need `textual` installed and skip themselves cleanly without it, so
+a machine without the dependency runs fewer tests rather than failing.
+
+No test executes a real Xray binary — the supervisor tests substitute a small fake script
+written into a tmpdir, because a real one would bind real ports and the repo copy is
+Gatekeeper-quarantined. Tests use documentation-reserved addresses and synthetic UUIDs, and
+never contact a real endpoint.
+
+## Layout
+
+```
+vless_proxy.py     thin shim: re-exports three names, delegates to vlessp.cli
+vlessp/
+  links.py         parse_vless_uri / build_xray_config   (pure, no I/O)
+  profiles.py      Profile model + ProfileStore          (JSON, never sees a UUID)
+  secrets.py       SecretStore + macOS Keychain + null   (the only Keychain caller)
+  xray.py          binary install + process supervision   (subprocess)
+  proxy.py         ProxyService, the orchestration seam
+  latency.py       one-shot server reachability probe
+  cli.py           argument parsing and the headless run loop
+  tui/             Textual front-end
+```
+
+See [`SECURITY.md`](SECURITY.md) for what is stored where, and
+[`docs/V1/`](docs/V1/) for the design record behind all of it.

@@ -1,6 +1,7 @@
 """Tests for vlessp.profiles — JSON store, no-UUID invariant, atomic saves."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import stat
@@ -18,7 +19,6 @@ from vlessp.profiles import (
     resolve_link,
 )
 from vlessp.secrets import NullSecretStore
-
 
 TEST_UUID = "11111111-2222-4333-8444-555555555555"
 
@@ -333,7 +333,7 @@ class TestResolveLink(unittest.TestCase):
 
     def test_profile_is_frozen(self) -> None:
         profile = Profile(id="x", label="y", link={})
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             profile.label = "z"  # type: ignore[misc]
 
     def test_app_data_dir_returns_path(self) -> None:

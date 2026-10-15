@@ -8,7 +8,6 @@ from unittest import mock
 from vlessp.errors import AppError
 from vlessp.secrets import KEYCHAIN_SERVICE, MacOSKeychain, NullSecretStore
 
-
 FAKE_SECRET = "super-secret-uuid-value-1234"
 FAKE_ACCOUNT = "profile-id-abc123"
 
