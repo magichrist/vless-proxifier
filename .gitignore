@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+
+# Never commit a VLESS link or the profile store
+*.vless
+profiles.json
+link.txt
+
+.venv/
+.venv
+docs/

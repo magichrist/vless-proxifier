@@ -1,0 +1,14 @@
+[project]
+name = "vless-python-proxy"
+version = "0.2.0"
+description = "Python CLI and TUI for managing VLESS profiles over local SOCKS5/HTTP proxies"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=1.0",
+]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
