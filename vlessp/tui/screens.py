@@ -37,6 +37,7 @@ import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
+from rich.table import Table
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
@@ -723,10 +724,266 @@ class EditProfileScreen(ModalScreen[Profile | None]):
         self.query_one("#error", Static).update(Text(message))
 
 
+class AddressScreen(ModalScreen[Profile | None]):
+    """Quick server/port editor — the common case, without the full form.
+
+    ``e`` edits every field, which is right when something is genuinely wrong.
+    But the most frequent edit by far is "this node moved to another address or
+    port", and reaching that through a nine-field form is pure friction. So this
+    screen exposes exactly two inputs.
+
+    It is still validated the same way: the candidate goes through
+    :func:`build_validation_uri` and back through :func:`parse_vless_uri`, with
+    every other key carried through untouched. Editing the address therefore
+    cannot silently drop a Reality ``pbk`` or a certificate pin — the parser is
+    still the only thing that decides whether a link is acceptable.
+
+    The UUID is untouched and therefore never present here. It stays in the
+    Keychain; nothing about changing an address needs the credential.
+    """
+
+    DEFAULT_CSS = """
+    AddressScreen {
+        align: center middle;
+    }
+    AddressScreen > VerticalScroll {
+        width: 64;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    AddressScreen .title {
+        height: auto;
+        margin-bottom: 1;
+    }
+    AddressScreen .current {
+        height: auto;
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    AddressScreen Input {
+        margin-bottom: 1;
+    }
+    AddressScreen .actions {
+        height: auto;
+    }
+    AddressScreen Button {
+        margin-right: 2;
+    }
+    AddressScreen .error {
+        height: auto;
+        color: $error;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, store: ProfileStore, profile: Profile) -> None:
+        super().__init__()
+        self._store = store
+        self._profile = profile
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Static(Text("Server address"), classes="title")
+            yield Static(
+                Text(f"currently {self._profile.link.get('server', '?')}:{self._profile.link.get('port', '?')}"),
+                classes="current",
+            )
+            yield Input(value=str(self._profile.link.get("server") or ""), placeholder="host or IP", id="server")
+            yield Input(
+                value=str(self._profile.link.get("port") or ""),
+                placeholder="port",
+                type="integer",
+                id="port",
+            )
+            yield Static("", id="error", classes="error")
+            with Horizontal(classes="actions"):
+                yield Button("Save", id="save", variant="success")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#server", Input).focus()
+
+    def _cancel_pressed(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        server = self.query_one("#server", Input).value.strip()
+        port_text = self.query_one("#port", Input).value.strip()
+        if not server:
+            self._fail("Server address cannot be empty.")
+            return
+        if not port_text.isdigit():
+            self._fail("Port must be a number.")
+            return
+        candidate = {**self._profile.link, "server": server, "port": int(port_text)}
+        # All DOM work happens here on the event loop. The worker below only
+        # touches the store, exactly like the edit screen's save: mutating a
+        # widget from a worker thread is not safe, and Textual will not stop us.
+        button = self.query_one("#save", Button)
+        button.disabled = True
+        self.query_one("#error", Static).update(Text(""))
+        self._save_worker(candidate)
+
+    @on(Button.Pressed, "#save")
+    def _save_pressed(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel_button_pressed(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Submitted)
+    def _any_submitted(self) -> None:
+        self.action_save()
+
+    @work(thread=True, exclusive=True, group="save")
+    def _save_worker(self, candidate: dict[str, Any]) -> None:
+        """Validate off the event loop, then commit.
+
+        Same shape as the edit screen's save: validate through the parser, write,
+        and hop back to the loop for the dismiss. A rejected candidate never
+        reaches the store, so the table can never show an address the parser
+        would have refused.
+        """
+        try:
+            parsed = parse_vless_uri(build_validation_uri(candidate), allow_insecure=True)
+        except AppError as exc:
+            self.app.call_from_thread(self._fail, str(exc))
+            return
+        # The round-trip through parse_vless_uri always yields a uuid -- for an
+        # edit it is the validation placeholder, not a credential. The store
+        # rejects any link carrying one, which is exactly the backstop we want:
+        # this pop is the thing that has to happen, and the store is what proves
+        # it did.
+        parsed.pop("uuid", None)
+        try:
+            profile = self._store.update(self._profile.id, link=parsed)
+            self._store.save()
+        except AppError as exc:
+            self.app.call_from_thread(self._fail, str(exc))
+            return
+        self.app.call_from_thread(self.dismiss, profile)
+
+    def _fail(self, message: str) -> None:
+        """Report a problem in place, next to the fields that caused it.
+
+        Parser messages are link-free by contract, so they can be shown verbatim.
+        Re-enabling Save is essential: leaving it disabled would strand the user
+        in a dialog they can only escape.
+        """
+        self.query_one("#save", Button).disabled = False
+        self.query_one("#error", Static).update(Text(message))
+
+
+class HelpScreen(ModalScreen[None]):
+    """Key reference, grouped by intent instead of listed flat.
+
+    A footer shows the current bindings, but a footer is a strip you learn to
+    ignore, and it cannot explain *when* a key applies. This is the thing to open
+    once and read.
+
+    The content is a literal table rather than a rendering of ``App.BINDINGS`` on
+    purpose: bindings carry no grouping or explanation, and the grouping is the
+    part that makes this useful. ``tests/test_tui.py`` asserts that every key
+    advertised here is actually bound, so the two cannot drift apart.
+    """
+
+    DEFAULT_CSS = """
+    HelpScreen {
+        align: center middle;
+    }
+    HelpScreen > VerticalScroll {
+        width: 76;
+        height: auto;
+        max-height: 85%;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    HelpScreen .title {
+        height: auto;
+    }
+    HelpScreen .hint {
+        height: auto;
+        margin-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("h", "dismiss", "Close"),
+        Binding("question_mark", "dismiss", "Close"),
+    ]
+
+    #: (section, [(key, description), ...]) — mirrors ``VlessApp.BINDINGS``.
+    SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+        (
+            "Connection",
+            (
+                ("c", "Connect the highlighted profile"),
+                ("space", "Stop the service, or resume it if stopped"),
+                ("t", "Test latency for every profile"),
+            ),
+        ),
+        (
+            "Profiles",
+            (
+                ("l", "Add a vless:// link"),
+                ("s", "Add a subscription URL (arrives in V2)"),
+                ("e", "Edit the highlighted profile"),
+                ("i", "Change server address and port"),
+                ("d", "Delete the highlighted profile"),
+            ),
+        ),
+        (
+            "View",
+            (
+                ("o", "Show or hide the Xray output pane"),
+                ("h", "This help"),
+            ),
+        ),
+        (
+            "App",
+            (
+                ("q", "Stop the proxy and quit"),
+            ),
+        ),
+    )
+
+    def compose(self) -> ComposeResult:
+        table = Table(box=None, pad_edge=False, padding=(0, 2), expand=False)
+        table.add_column("Key", no_wrap=True)
+        table.add_column("Does", no_wrap=False)
+        for title, rows in self.SECTIONS:
+            table.add_section()
+            table.add_row(Text(title, style="bold"), "")
+            for key, description in rows:
+                table.add_row(Text(f"  {key}", style="cyan"), description)
+        with VerticalScroll():
+            yield Static(Text("Keyboard"), classes="title")
+            yield Static(table)
+            yield Static(Text("Up and Down move, Enter also connects."), classes="hint")
+            yield Static(Text("escape or h closes this."), classes="hint")
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 __all__ = [
     "AddProfileScreen",
+    "AddressScreen",
     "ConfirmScreen",
     "EditProfileScreen",
+    "HelpScreen",
     "SECURITY_CHOICES",
     "TRANSPORT_CHOICES",
     "build_validation_uri",

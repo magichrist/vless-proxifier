@@ -46,7 +46,7 @@ from textual.widgets import Footer, Header, Static
 from vlessp import APP_NAME
 from vlessp.errors import AppError
 from vlessp.profiles import ProfileStore
-from vlessp.tui.screens import AddProfileScreen, ConfirmScreen, EditProfileScreen
+from vlessp.tui.screens import AddProfileScreen, AddressScreen, ConfirmScreen, EditProfileScreen, HelpScreen
 from vlessp.tui.widgets import ProfileTable, StatusBar
 
 if TYPE_CHECKING:
@@ -124,15 +124,28 @@ class VlessApp(App[None]):
     """
 
     BINDINGS = [
-        # priority=True so this wins over DataTable's own "enter" -> select_cursor.
-        Binding("enter", "connect_row", "Connect", priority=True),
-        Binding("a", "add_profile", "Add"),
-        Binding("e", "edit_profile", "Edit"),
-        Binding("d", "delete_profile", "Delete"),
+        # Connection. `c` acts on the highlighted row; `space` is the state
+        # toggle for the service as a whole. They are separate keys because
+        # "switch to this one" and "shut this off" are different intentions, and
+        # merging them makes a stop-whenever-you-press-space surprise.
+        Binding("c", "connect_row", "Connect", priority=True),
+        Binding("space", "toggle_connection", "Stop/Resume"),
         Binding("t", "test_all", "Test"),
-        Binding("c", "toggle_connection", "Connect/Stop"),
-        Binding("l", "toggle_log", "Log"),
+        # Profiles. `l` is the single memorable verb for adding a link; `a` is
+        # kept as a hidden alias because it was the V1 key and muscle memory
+        # outlives a rebrand.
+        Binding("l", "add_profile", "Add link"),
+        Binding("s", "add_subscription", "Add sub"),
+        Binding("e", "edit_profile", "Edit"),
+        Binding("i", "edit_address", "IP/Port"),
+        Binding("d", "delete_profile", "Delete"),
+        # View and app.
+        Binding("o", "toggle_log", "Output"),
+        Binding("h", "show_help", "Help"),
         Binding("q", "quit_app", "Quit"),
+        # Hidden aliases: advertised in the help overlay rather than the footer.
+        Binding("enter", "connect_row", "", show=False, priority=True),
+        Binding("a", "add_profile", "", show=False),
     ]
 
     def __init__(
@@ -243,7 +256,7 @@ class VlessApp(App[None]):
     # -- actions ---------------------------------------------------------
 
     def action_connect_row(self) -> None:
-        """``Enter`` — switch to the highlighted profile."""
+        """``c`` (or ``Enter``) — switch to the highlighted profile."""
         if not self._on_main_screen() or self._switching:
             return
         profile_id = self._selected_id()
@@ -254,7 +267,12 @@ class VlessApp(App[None]):
         self._connect_worker(profile_id)
 
     def action_toggle_connection(self) -> None:
-        """``c`` — connect the active profile, or stop the running one."""
+        """``space`` — stop the running service, or resume the active profile.
+
+        Deliberately not bound to ``c``: ``c`` acts on the highlighted row while
+        this acts on the service as a whole. A user scanning the table and
+        pressing ``c`` expects to move to that row, not to halt their tunnel.
+        """
         if not self._on_main_screen() or self._switching:
             return
         if self._service.running:
@@ -269,7 +287,7 @@ class VlessApp(App[None]):
         self._connect_worker(profile_id)
 
     def action_add_profile(self) -> None:
-        """``a`` — open the add modal; the table refreshes when it closes."""
+        """``l`` (or ``a``) — open the add modal; the table refreshes when it closes."""
         if not self._on_main_screen():
             return
         if self._secrets is None:
@@ -340,8 +358,51 @@ class VlessApp(App[None]):
         self._note("testing all profiles…")
         self._probe_worker()
 
+    def action_edit_address(self) -> None:
+        """``i`` — quick server/port editor for the highlighted profile.
+
+        The short path for the most common edit. ``e`` is still the full form;
+        this exists because making someone page through nine fields to fix an
+        address is the kind of friction that pushes people back to editing raw
+        links by hand, which is exactly what this tool is meant to replace.
+        """
+        if not self._on_main_screen():
+            return
+        profile_id = self._selected_id()
+        if profile_id is None:
+            self.notify("No profile selected.", severity="warning", markup=False)
+            return
+        profile = self._store.get(profile_id)
+        self.push_screen(AddressScreen(self._store, profile), callback=self._on_profile_closed)
+
+    def action_add_subscription(self) -> None:
+        """``s`` — reserved for subscription import, which lands in V2.
+
+        Bound and explained rather than left unbound. A key that silently does
+        nothing is worse than one that says why: the design decisions are
+        already recorded in ``docs/V1/05-v2-parked.md``, so the feature is
+        planned rather than forgotten, and the keymap will not have to change
+        when it arrives.
+        """
+        if not self._on_main_screen():
+            return
+        message = (
+            "Subscriptions arrive in V2. The format and refresh policy are "
+            "already decided - see docs/V1/05-v2-parked.md. Use l for a single link."
+        )
+        # Both channels: a toast for right now, and a log note because a toast
+        # disappears before most people have finished reading it.
+        self._note(message)
+        self.notify(message, severity="information", markup=False)
+
+    def action_show_help(self) -> None:
+        """``h`` — open the key reference."""
+        if not self._on_main_screen():
+            return
+        self.push_screen(HelpScreen())
+
     def action_toggle_log(self) -> None:
-        """``l`` — show or hide the Xray log pane."""
+        """``o`` — show or hide the Xray output pane."""
         if not self._on_main_screen():
             return
         pane = self.query_one("#log-pane", Static)

@@ -32,18 +32,34 @@ writes diagnostics to stderr; without this, a failed switch is a silent mystery.
 
 ## Keybindings
 
+Revised after usability review. The original draft used `a` for add and `l` for the log pane,
+which made the two most frequent actions the hardest to reach.
+
 | Key | Action | Notes |
 |---|---|---|
-| `Enter` | Connect to highlighted profile | Runs D7's ordered switch |
-| `a` | Add profile | Paste a link |
+| `c` | Connect highlighted profile | Acts on the row |
+| `space` | Stop / resume | Acts on the service as a whole — deliberately not `c` |
+| `l` | Add a `vless://` link | `a` kept as a hidden alias |
+| `s` | Add a subscription URL | V2 stub; explains itself rather than no-oping |
 | `e` | Edit profile | Non-secret fields only |
+| `i` | Change server + port | Short form; all other fields carried through the parser |
 | `d` | Delete profile | Confirmation modal |
 | `t` | Test all (latency) | Concurrent, sorted on completion |
-| `c` | Connect / disconnect | Toggle |
-| `l` | Toggle log pane | |
+| `o` | Toggle output pane | Was `l` in the first draft |
+| `h` | Help | Grouped by intent, not listed flat |
 | `q` | Quit | Terminates Xray cleanly |
 
-Shown in a Textual `Footer`. Nothing is bound to `ctrl+c` alone — `q` is the discoverable path.
+`Enter` (connect row) and `a` (add link) remain bound but hidden from the footer.
+
+**Why `c` and `space` are separate.** A user scanning the table and pressing `c` expects to
+move to that row. Folding the stop action into the same key means a mis-press halts the tunnel
+instead of selecting. The two intents — "switch to this one" and "shut this off" — stay
+separate keys.
+
+**Why `i` exists alongside `e`.** The full edit form has nine fields, and the edit made most
+often is "this node moved to a different address or port". A two-field screen for that is not
+duplication, it is the common path. It still validates through `build_validation_uri` →
+`parse_vless_uri`, so editing the address cannot drop a Reality `pbk` or a certificate pin.
 
 ---
 

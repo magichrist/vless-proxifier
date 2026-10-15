@@ -28,7 +28,14 @@ try:
     from textual.widgets import Button, Input, Select, Static
     from textual.widgets._select import InvalidSelectValueError
 
-    from vlessp.tui import AddProfileScreen, ConfirmScreen, EditProfileScreen, VlessApp
+    from vlessp.tui import (
+        AddProfileScreen,
+        AddressScreen,
+        ConfirmScreen,
+        EditProfileScreen,
+        HelpScreen,
+        VlessApp,
+    )
     from vlessp.tui.screens import build_validation_uri
     from vlessp.tui.widgets import DASH, ProfileTable, StatusBar
 
@@ -522,21 +529,48 @@ class TestConnect(TuiTestCase):
         self.assertNotIn(TEST_UUID, reported)
         self.assertNotIn("vless://", reported)
 
-    async def test_c_toggles_connection_off_and_on(self) -> None:
+    async def test_space_toggles_the_service_off_and_on(self) -> None:
         await self.settle()
         profile = self.add_profile("alpha")
         self.store.set_active(profile.id)
         self.app._reload_table()
         await self.settle()
 
-        await self.pilot.press("c")
+        await self.pilot.press("space")
         await self.settle()
         self.assertTrue(self.service.running)
 
-        await self.pilot.press("c")
+        await self.pilot.press("space")
         await self.settle()
         self.assertFalse(self.service.running)
         self.assertEqual(self.service.disconnect_calls, 1)
+
+    async def test_c_connects_the_highlighted_row_and_does_not_toggle_the_service(self) -> None:
+        """``c`` and ``space`` must stay distinct.
+
+        ``c`` acts on the highlighted row; ``space`` acts on the service as a
+        whole. If ``c`` ever grows the toggle behaviour, pressing it while
+        scanning the table halts the tunnel instead of moving — which is the
+        surprise this split exists to prevent.
+        """
+        await self.settle()
+        first = self.add_profile("alpha")
+        second = self.add_profile("beta")
+        self.app._reload_table()
+        await self.settle()
+        # Park the cursor on the second row, then connect it with `c`.
+        self.table().cursor_coordinate = self.table().cursor_coordinate._replace(row=1)
+        await self.pilot.pause()
+
+        await self.pilot.press("c")
+        await self.settle()
+        self.assertIn(f"connect:{second.id}", self.service.calls)
+        self.assertNotIn(f"connect:{first.id}", self.service.calls)
+
+        # Pressing `c` again must connect, not disconnect.
+        await self.pilot.press("c")
+        await self.settle()
+        self.assertEqual(self.service.disconnect_calls, 0, "c must never stop the service")
 
 
 class TestLatency(TuiTestCase):
@@ -587,15 +621,23 @@ class TestLatency(TuiTestCase):
 
 
 class TestLogAndQuit(TuiTestCase):
-    async def test_l_toggles_the_log_pane(self) -> None:
+    async def test_o_toggles_the_log_pane(self) -> None:
         await self.settle()
         self.assertFalse(self.app.log_visible)
-        await self.pilot.press("l")
+        await self.pilot.press("o")
         await self.settle()
         self.assertTrue(self.app.log_visible)
-        await self.pilot.press("l")
+        await self.pilot.press("o")
         await self.pilot.pause()
         self.assertFalse(self.app.log_visible)
+
+    async def test_l_no_longer_toggles_the_log_pane(self) -> None:
+        """``l`` is "add a link" now. A stale binding here would silently
+        reappear the moment somebody trusted the old keymap."""
+        await self.settle()
+        await self.pilot.press("l")
+        await self.pilot.pause()
+        self.assertFalse(self.app.log_visible, "l must open the add modal, not the log pane")
 
     async def test_the_log_pane_shows_the_service_tail(self) -> None:
         await self.settle()
@@ -604,7 +646,7 @@ class TestLogAndQuit(TuiTestCase):
         await self.settle()
         await self.pilot.press("enter")
         await self.settle()
-        await self.pilot.press("l")
+        await self.pilot.press("o")
         await self.settle()
         rendered = str(self.app.query_one("#log-pane", Static).render())
         self.assertIn("started", rendered)
@@ -823,6 +865,133 @@ class TestEditProfile(TuiTestCase):
         await self.pilot.pause()
         self.assertEqual(self.store.all(), [])
         self.assertNotIn(profile.id, self.secrets.items)
+
+
+class TestHelpScreen(TuiTestCase):
+    async def test_h_opens_help_and_escape_closes_it(self) -> None:
+        await self.settle()
+        self.assertIs(self.app.screen, self.app.screen_stack[0])
+        await self.pilot.press("h")
+        await self.pilot.pause()
+        self.assertIsInstance(self.app.screen, HelpScreen)
+        await self.pilot.press("escape")
+        await self.pilot.pause()
+        self.assertIs(self.app.screen, self.app.screen_stack[0])
+
+    async def test_help_lists_every_advertised_binding(self) -> None:
+        """The help table and the real keymap cannot drift apart.
+
+        A stale key in the help screen is worse than a missing one: it teaches
+        the user a shortcut that does not exist.
+        """
+        bound = {key for binding in VlessApp.BINDINGS for key in (binding.key,) if not binding.key.startswith("^")}
+        advertised = {key for _title, rows in HelpScreen.SECTIONS for key, _desc in rows}
+        self.assertEqual(
+            advertised - bound,
+            set(),
+            "help advertises keys that are not bound",
+        )
+        self.assertEqual(
+            {key for key in bound if key not in advertised and key not in {"enter", "a"}},
+            set(),
+            "a bound key is missing from help",
+        )
+
+    async def test_help_documents_the_keys_the_user_asked_for(self) -> None:
+        advertised = {key for _t, rows in HelpScreen.SECTIONS for key, _d in rows}
+        for key in ("h", "s", "l", "c", "space", "i", "o"):
+            self.assertIn(key, advertised, f"{key} must be discoverable from help")
+
+
+class TestAddressScreen(TuiTestCase):
+    async def test_i_opens_the_server_and_port_form_for_the_highlighted_row(self) -> None:
+        await self.settle()
+        self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        await self.pilot.press("i")
+        await self.pilot.pause()
+        screen = self.app.screen
+        self.assertIsInstance(screen, AddressScreen)
+        self.assertEqual(screen.query_one("#server", Input).value, "203.0.113.10")
+        self.assertEqual(screen.query_one("#port", Input).value, "2083")
+
+    async def test_editing_the_address_keeps_every_other_field(self) -> None:
+        await self.settle()
+        profile = self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        await self.pilot.press("i")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, AddressScreen)
+
+        screen.query_one("#server", Input).value = "198.51.100.7"
+        screen.query_one("#port", Input).value = "8443"
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        stored = self.store.get(profile.id)
+        self.assertEqual(stored.link["server"], "198.51.100.7")
+        self.assertEqual(stored.link["port"], 8443)
+        self.assertEqual(stored.link["sni"], "example.com", "unrelated fields survive")
+        self.assertEqual(stored.label, "alpha", "the label is not this screen's business")
+        self.assertNotIn("uuid", stored.link)
+        self.assertEqual(self.secrets.items[profile.id], TEST_UUID, "the UUID is untouched")
+
+    async def test_an_invalid_address_is_refused_and_changes_nothing(self) -> None:
+        await self.settle()
+        profile = self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        await self.pilot.press("i")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, AddressScreen)
+
+        screen.query_one("#server", Input).value = "not a hostname"
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertIn("hostname", str(screen.query_one("#error", Static).render()).lower())
+        self.assertEqual(self.store.get(profile.id).link["server"], "203.0.113.10")
+        self.assertIsInstance(self.app.screen, AddressScreen)
+        self.assertFalse(screen.query_one("#save", Button).disabled, "a refused save must not strand the user")
+
+    async def test_a_non_numeric_port_is_refused_before_the_store(self) -> None:
+        await self.settle()
+        profile = self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        await self.pilot.press("i")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, AddressScreen)
+
+        screen.query_one("#port", Input).value = "eight thousand"
+        screen.query_one("#save", Button).press()
+        await self.pilot.pause()
+        self.assertIn("Port", str(screen.query_one("#error", Static).render()))
+        self.assertEqual(self.store.get(profile.id).link["port"], 2083)
+
+
+class TestSubscriptionStub(TuiTestCase):
+    async def test_s_explains_itself_instead_of_doing_nothing(self) -> None:
+        """A key that silently no-ops is worse than one that says why."""
+        await self.settle()
+        self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+
+        await self.pilot.press("s")
+        await self.settle()
+        notes = "\n".join(self.app._notes)
+        self.assertIn("V2", notes)
+        self.assertIn("05-v2-parked.md", notes, "the decision record should be discoverable in place")
+        self.assertIs(self.app.screen, self.app.screen_stack[0], "s must not open a modal")
+        self.assertTrue(self.app.is_running)
 
 
 class TestBuildValidationUri(unittest.IsolatedAsyncioTestCase):

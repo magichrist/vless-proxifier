@@ -60,22 +60,31 @@ upstream is reachable; the curl calls are the end-to-end check.
 
 | Key | Action | Notes |
 |---|---|---|
-| `Enter` | Connect the highlighted profile | validates the new config before stopping the old one |
-| `a` | Add a profile | pastes a `vless://` link; masked input, preview before saving |
+| `c` | Connect the highlighted profile | validates the new config before stopping the old one |
+| `space` | Stop, or resume if stopped | acts on the service as a whole, not the row |
+| `l` | Add a `vless://` link | masked input, preview before saving |
+| `s` | Add a subscription URL | *arrives in V2* — explains itself and points at the decision record |
 | `e` | Edit a profile | non-secret fields only — the UUID is not editable here |
+| `i` | Change server and port | short form for the most common edit; every other field is carried through |
 | `d` | Delete a profile | asks first; removes the Keychain item too |
 | `t` | Test all | one TCP latency probe per profile, sorts the table |
-| `c` | Connect / disconnect | reconnect the last active profile, or stop |
-| `l` | Toggle the log pane | shows Xray's last output |
+| `o` | Show/hide the output pane | Xray's last output |
+| `h` | Help | the full key reference, grouped by intent |
 | `q` | Quit | terminates Xray cleanly |
 
-Two behaviours worth knowing because they are easy to assume otherwise:
+`Enter` still connects the highlighted row and `a` still adds a link, so the V1 muscle memory
+keeps working. Both are hidden from the footer and listed in `h`.
 
+Three behaviours worth knowing because they are easy to assume otherwise:
+
+- **`c` and `space` are different on purpose.** `c` acts on the highlighted row; `space` acts on
+  the service as a whole. Pressing `c` while scanning the table moves to that row — it never
+  silently halts your tunnel.
 - **Latency is reachability, not throughput.** `t` measures a TCP connect to each profile's
   server. It does not measure speed through the tunnel, because that would require the proxy
   to already be running on that profile.
 - **Nothing connects automatically.** Launching the UI does not start a tunnel, and `t` never
-  changes which profile is active. Press `Enter` or `c`.
+  changes which profile is active. Press `c`, or `space` to resume the last active profile.
 
 ---
 
