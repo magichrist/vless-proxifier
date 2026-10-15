@@ -14,8 +14,9 @@ security model and it is written out in full.
 | Item | Where | Protection |
 |---|---|---|
 | **UUID** — the one credential | macOS Keychain, one item per profile, account = profile id | Keychain ACL: available to processes running as you, not to other users |
+| **Subscription URL** — also a credential (see below) | macOS Keychain, one item per subscription, account = `subscription:<name>` | same |
 | Server, port, security, transport, SNI, fingerprint, ALPN, path, host, flow, gRPC service, Reality `pbk` / `sid` / `spx`, `encryption`, certificate pins | `~/Library/Application Support/vless-python-proxy/profiles.json` | `0600` file in a `0700` directory, written atomically |
-| Active profile id, labels, latency cache | same file | same |
+| Active profile id, labels, latency cache, list of known subscription names | same file | same |
 | Runtime Xray config (carries the UUID) | temp dir under Application Support | `0600` in `0700`, deleted when the process stops |
 | Xray binary | `~/Library/Application Support/vless-python-proxy/xray/<tag>/` | `0700` directories, SHA-256 verified against the upstream `.dgst` before install |
 
@@ -26,7 +27,33 @@ is stored in the Keychain, and neither is a secret.
 
 The store enforces the split rather than trusting callers: `ProfileStore.add` and
 `.update` raise if a link dict still carries a `uuid` key, and the loader rejects a file
-that contains one.
+that contains one. Imported subscription nodes go through the same path, so a fetched UUID
+reaches the Keychain and never `profiles.json`.
+
+---
+
+## Subscription URLs are credentials too
+
+A subscription URL typically embeds a token granting access to your **entire node list**. It
+gets the same Keychain treatment as a UUID, and the same caution:
+
+- **There is deliberately no flag that accepts a subscription URL.** Argv is visible to every
+  process on the machine, so `--sub NAME` prompts once and stores the URL in the Keychain.
+- It is never printed — not in output, not in an error, not in a usage message. Fetch failures
+  are reported by *name* (`ConnectTimeout`), never by interpolating an httpx exception, whose
+  string form carries the request URL.
+- Only `https://` is accepted, and a redirect to a non-`https` hop is refused.
+- The response is size-capped **while streaming**, so a hostile or broken endpoint cannot make
+  the client buffer without bound.
+- **No retries.** A retry against a credential URL doubles the exposure for no benefit.
+- Subscriptions are fetched **only when you ask** — never on a timer. The tool does not
+  periodically phone your provider on your behalf.
+
+**Refreshing is non-destructive.** A node whose UUID rotated is updated rather than duplicated;
+a node your provider stopped offering is flagged `gone` rather than deleted, because an upstream
+omission is usually a transient outage and deletion is irreversible. A response containing no
+usable links changes nothing at all — otherwise a 200 returning a login page would flag every
+node in that subscription as gone.
 
 ---
 
@@ -86,9 +113,12 @@ Each of these is asserted by a test, not just described here.
 - **`--link` is the least private option.** The link sits in argv, where other processes on
   the machine can read it. It warns on stderr; prefer `--link-file`.
 - **No `AppError` message contains a link.** Not the URI, not the UUID, not the query
-  string. Every message is written from the shape of the problem. The same filter is applied
-  to Xray's own output before it reaches the CLI's stderr or the UI's log pane, because
-  Xray prints config fragments on some parse errors.
+  string, not a subscription URL. Every message is written from the shape of the problem. The
+  same filter is applied to Xray's own output before it reaches the CLI's stderr or the UI's log
+  pane, because Xray prints config fragments on some parse errors.
+- **Attacker-controlled query-parameter names are redacted.** A subscription author chooses
+  those, so echoing one verbatim would let a hostile feed smuggle a UUID into a log file with
+  one extra hop. Names in error messages are redacted and clipped.
 - **Downloads** accept only the official XTLS/Xray-core release API and assets, cap the
   size, and verify the SHA-256 before installing.
 - **No signed provenance is checked.** A checksum published by the same host that served the

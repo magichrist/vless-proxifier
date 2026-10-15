@@ -78,6 +78,27 @@ def is_valid_hostname(host: str) -> bool:
     return all(1 <= len(label) <= 63 and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label) for label in labels)
 
 
+_UUID_SHAPE_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+
+
+def _safe_param(key: str) -> str:
+    """Render an untrusted query-parameter name for an error message.
+
+    Parameter names arrive from whoever wrote the link, and with subscriptions
+    that is a third party. Echoing the name verbatim would let a hostile
+    subscription smuggle a UUID — or a whole ``vless://`` URI — into our error
+    text and from there into a log file, breaking the one invariant this project
+    cannot afford to break.
+
+    So: redact anything credential-shaped, then clip to something a human can
+    still recognise in a log.
+    """
+    redacted = re.sub(r"(?i)vless://\S+", "<redacted-uri>", key)
+    redacted = _UUID_SHAPE_RE.sub("<redacted-uuid>", redacted)
+    redacted = re.sub(r"[^\w.\-]", "?", redacted)
+    return redacted if len(redacted) <= 32 else redacted[:29] + "..."
+
+
 def query_params(query: str) -> dict[str, str]:
     """Parse a VLESS query string into a validated, alias-checked mapping.
 
@@ -92,9 +113,9 @@ def query_params(query: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in pairs:
         if key in result:
-            raise AppError(f"Duplicate VLESS parameter {key!r} is ambiguous.")
+            raise AppError(f"Duplicate VLESS parameter {_safe_param(key)} is ambiguous.")
         if len(key) > 64 or len(value.encode("utf-8")) > 4096:
-            raise AppError(f"VLESS parameter {key!r} is too long.")
+            raise AppError(f"VLESS parameter {_safe_param(key)} is too long.")
         result[key] = value
     for first, second in _ALIASES:
         if first in result and second in result and result[first] != result[second]:
@@ -131,7 +152,7 @@ def parse_vless_uri(raw: str, *, allow_insecure: bool = False) -> dict[str, Any]
     except ValueError:
         raise AppError("Invalid VLESS URI syntax.") from None
     if url.scheme.lower() != "vless" or not url.username or url.password is not None:
-        raise AppError("Expected vless://UUID@host:port.")
+        raise AppError("Expected a VLESS URI in the form UUID@host:port.")
     uuid = urllib.parse.unquote(url.username)
     if not UUID_RE.fullmatch(uuid):
         raise AppError("Invalid VLESS UUID; expected canonical UUID format.")

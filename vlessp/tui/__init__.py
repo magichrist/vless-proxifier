@@ -8,16 +8,29 @@ and :mod:`vlessp.tui.screens` for the credential-handling order.
 from __future__ import annotations
 
 from vlessp.tui.app import VlessApp
-from vlessp.tui.screens import AddProfileScreen, AddressScreen, ConfirmScreen, EditProfileScreen, HelpScreen
+from vlessp.tui.screens import (
+    AddProfileScreen,
+    AddressScreen,
+    AddSubscriptionScreen,
+    ConfirmScreen,
+    EditProfileScreen,
+    HelpScreen,
+)
+from vlessp.tui.theme import THEME_ORDER, THEMES, apply_theme, next_theme
 from vlessp.tui.widgets import ProfileTable, StatusBar
 
 __all__ = [
     "AddProfileScreen",
+    "AddSubscriptionScreen",
     "AddressScreen",
     "ConfirmScreen",
     "EditProfileScreen",
     "HelpScreen",
     "ProfileTable",
     "StatusBar",
+    "THEMES",
+    "THEME_ORDER",
     "VlessApp",
+    "apply_theme",
+    "next_theme",
 ]

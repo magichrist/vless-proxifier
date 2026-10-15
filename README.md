@@ -63,17 +63,60 @@ upstream is reachable; the curl calls are the end-to-end check.
 | `c` | Connect the highlighted profile | validates the new config before stopping the old one |
 | `space` | Stop, or resume if stopped | acts on the service as a whole, not the row |
 | `l` | Add a `vless://` link | masked input, preview before saving |
-| `s` | Add a subscription URL | *arrives in V2* — explains itself and points at the decision record |
+| `s` | Add a subscription URL | imports every node in the feed; masked input |
 | `e` | Edit a profile | non-secret fields only — the UUID is not editable here |
 | `i` | Change server and port | short form for the most common edit; every other field is carried through |
 | `d` | Delete a profile | asks first; removes the Keychain item too |
 | `t` | Test all | one TCP latency probe per profile, sorts the table |
 | `o` | Show/hide the output pane | Xray's last output |
+| `alt+t` | Cycle the colour theme | `textual-dark` → `gummy` → `cyber-female` |
 | `h` | Help | the full key reference, grouped by intent |
 | `q` | Quit | terminates Xray cleanly |
 
 `Enter` still connects the highlighted row and `a` still adds a link, so the V1 muscle memory
 keeps working. Both are hidden from the footer and listed in `h`.
+
+### Themes
+
+`alt+t` cycles instantly — no modal, because the fastest way to compare themes is with nothing
+to dismiss. `textual-dark` is deliberately first: a user who never presses the key sees exactly
+what they saw before.
+
+Every theme is held to **WCAG 2.1 AA at 4.5:1**, which is why `gummy` is less bright than the
+name suggests. Its original bubblegum pink measured 2.65:1 on cream, and a tangerine 2.19:1 —
+both unreadable as text. The colours were deepened along the lightness axis with hue and
+saturation held constant, so `#517516` is still recognisably the same lime as the `#8AC926` it
+started as. "Candy" lives in the borders, fills, and Textual's derived tints instead.
+`tests/test_theme.py` asserts the whole contrast matrix, and also asserts the *original*
+colours fail — so the pastel version cannot be quietly restored.
+
+### Subscriptions
+
+`s` records a subscription URL in the Keychain and imports its nodes. The format is a plain-text
+list of `vless://` links, with a base64 decode attempted once if the body does not start with
+`vless://` — providers serve both under the same URL.
+
+```
+python3 vless_proxy.py --sub work      # fetch and import one
+python3 vless_proxy.py --refresh-subs  # re-fetch every stored subscription
+python3 vless_proxy.py --list          # shows each profile's source
+```
+
+**Subscriptions are fetched when you ask, and never on a timer.** A subscription URL embeds a
+token granting access to your entire node list, so every fetch is a credential-bearing request
+to a third party. There is deliberately no flag that takes a URL — argv is visible to every
+process on the machine — so `--sub NAME` prompts for it once and stores it in the Keychain.
+
+Refreshing is **non-destructive by design** (decision S5 in `docs/V1/05-v2-parked.md`):
+
+- A node whose UUID rotated is **updated**, never duplicated. Identity is
+  `(server, port, transport, SNI)` — deliberately not the UUID, which is the thing that rotates.
+- A node your provider stopped offering is **flagged `gone`**, not deleted. An upstream omission
+  is usually a transient outage, and deletion is irreversible. Flagged profiles stay fully
+  usable; the table dims them rather than hiding them.
+- A local rename survives a refresh.
+- A response with no usable links changes **nothing** — a 200 returning a login page would
+  otherwise mark every node in that subscription unavailable.
 
 Three behaviours worth knowing because they are easy to assume otherwise:
 
@@ -200,8 +243,10 @@ on by default, and a link carrying `insecure=1` is refused unless you pass
 python3 -m unittest discover -s tests -v
 ```
 
-237 tests. The TUI tests need `textual` installed and skip themselves cleanly without it, so
-a machine without the dependency runs fewer tests rather than failing.
+The TUI tests need `textual` installed and skip themselves cleanly without it, so a machine
+without the dependency runs fewer tests rather than failing. They are also the slow part: the
+full suite takes several minutes, almost all of it in `tests/test_tui.py` driving a real
+headless Textual app. The non-TUI modules finish in seconds.
 
 No test executes a real Xray binary — the supervisor tests substitute a small fake script
 written into a tmpdir, because a real one would bind real ports and the repo copy is

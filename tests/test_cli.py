@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import socket
 import stat
@@ -819,3 +820,166 @@ class TestSupervisionLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestSubscriptionFlags(CliTestCase):
+    """--sub / --refresh-subs fetch and import without ever printing a URL.
+
+    A subscription URL grants access to the user's whole node list, so it is a
+    credential. These tests treat every assertion about its absence as load
+    bearing.
+    """
+
+    def _stub_fetch(self, body: str) -> list[str]:
+        seen: list[str] = []
+        patcher = mock.patch("vlessp.cli.fetch_subscription", lambda url: seen.append(url) or body)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return seen
+
+    def _body(self, *nodes: str) -> str:
+        return "\n".join(nodes)
+
+    def _node(self, uuid_value: str, host: str, label: str) -> str:
+        return (
+            f"vless://{uuid_value}@{host}:443?type=tcp&security=tls&encryption=none#{label}"
+        )
+
+    def test_sub_fetches_and_imports_a_stored_subscription(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        body = self._body(
+            self._node(TEST_UUID, "203.0.113.10", "one"),
+            self._node("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "203.0.113.11", "two"),
+        )
+        seen = self._stub_fetch(body)
+        code, out, _err = self.run_main(["--sub", "work"])
+        self.store.load()
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, ["https://sub.example/list"])
+        self.assertIn("2 new", out)
+        self.assertEqual(len(self.store.by_source("subscription:work")), 2)
+
+    def test_imported_uuids_never_reach_disk(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        self.run_main(["--sub", "work"])
+        self.store.load()
+        self.assertNotIn(TEST_UUID, self.store_path.read_text(encoding="utf-8"))
+
+    def test_the_url_is_never_printed_anywhere(self) -> None:
+        url = "https://sub.example/list?token=SUPERSECRETTOKEN"
+        self.secrets.set("subscription:work", url)
+        self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        _code, out, err = self.run_main(["--sub", "work"])
+        self.store.load()
+        self.assertNotIn("SUPERSECRETTOKEN", out + err)
+        self.assertNotIn("sub.example", out + err)
+
+    def test_a_fetch_failure_never_echoes_the_url(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list?token=SUPERSECRETTOKEN")
+        with mock.patch(
+            "vlessp.cli.fetch_subscription",
+            side_effect=AppError("could not reach the subscription service (ConnectTimeout)."),
+        ):
+            code, out, err = self.run_main(["--sub", "work"])
+        self.assertEqual(code, 1)
+        self.assertNotIn("SUPERSECRETTOKEN", out + err)
+        self.assertIn("failed", err)
+
+    def test_an_empty_response_is_refused_and_flags_nothing(self) -> None:
+        """The data-loss guard: a login page must not mark every node unavailable."""
+        profile = self.add_profile("kept")
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        self._stub_fetch("<html>Sign in</html>")
+        code, _out, err = self.run_main(["--sub", "work"])
+        self.assertEqual(code, 1)
+        self.assertIn("no usable nodes", err)
+        self.assertFalse(self.store.get(profile).unavailable, "nothing may be flagged")
+        self.assertIsNotNone(self.store.get(profile), "and nothing deleted")
+
+    def test_reimport_is_idempotent(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        body = self._body(self._node(TEST_UUID, "203.0.113.10", "one"))
+        self._stub_fetch(body)
+        self.run_main(["--sub", "work"])
+        self.store.load()
+        _code, out, _err = self.run_main(["--sub", "work"])
+        self.store.load()
+        self.assertIn("0 new", out)
+        self.assertEqual(len(self.store.by_source("subscription:work")), 1)
+
+    def test_refresh_subs_recovers_names_from_imported_profiles(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        self.run_main(["--sub", "work"])
+        self.store.load()
+        seen = self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        code, _out, _err = self.run_main(["--refresh-subs"])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, ["https://sub.example/list"], "the name must be recoverable")
+
+    def test_refresh_subs_continues_past_one_failure(self) -> None:
+        self.secrets.set("subscription:a", "https://a.example/list")
+        self.secrets.set("subscription:b", "https://b.example/list")
+        self.store.remember_subscription("a")
+        self.store.remember_subscription("b")
+        self.store.save()
+
+        def flaky(url: str) -> str:
+            if "a.example" in url:
+                raise AppError("upstream refused the request.")
+            return self._body(self._node(TEST_UUID, "198.51.100.7", "ok"))
+
+        with mock.patch("vlessp.cli.fetch_subscription", side_effect=flaky):
+            code, out, err = self.run_main(["--refresh-subs"])
+        self.assertEqual(code, 1, "one failure must still be reported in the exit code")
+        self.assertIn("failed", err)
+        self.assertIn("b:", out, "the healthy subscription was still refreshed")
+
+    def test_a_subscription_is_remembered_even_when_it_imports_nothing(self) -> None:
+        """A feed that broke is the one a refresh most needs to retry."""
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        self.store.remember_subscription("work")
+        self.store.save()
+        seen = self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        self.run_main(["--refresh-subs"])
+        self.assertEqual(seen, ["https://sub.example/list"])
+        self.store.load()
+        self.assertIn("work", self.store.subscriptions)
+
+    def test_conflicting_flags_exit_2(self) -> None:
+        for argv in (
+            ["--sub", "work", "--check"],
+            ["--sub", "work", "--link", "vless://x@example.com:443"],
+            ["--refresh-subs", "--profile", "home"],
+        ):
+            with self.subTest(argv=argv):
+                code, _out, err = self.run_main(argv)
+                self.assertEqual(code, 2)
+                self.assertIn("cannot be combined", err)
+
+    def test_sub_with_refresh_subs_does_the_broader_thing(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        self.add_profile("work", server="203.0.113.10")
+        self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        code, _out, err = self.run_main(["--sub", "work", "--refresh-subs"])
+        self.assertEqual(code, 0)
+        self.assertIn("already covers", err)
+
+    def test_list_shows_source_and_availability(self) -> None:
+        self.secrets.set("subscription:work", "https://sub.example/list")
+        self._stub_fetch(self._body(self._node(TEST_UUID, "203.0.113.10", "one")))
+        self.run_main(["--sub", "work"])
+        self.store.load()
+        imported = self.store.by_source("subscription:work")[0]
+        self.store.update(imported.id, link={**imported.link, "server": "203.0.113.10"})
+        # Flag it the way an upstream omission would.
+        data = json.loads(self.store_path.read_text(encoding="utf-8"))
+        for entry in data["profiles"]:
+            if entry["id"] == imported.id:
+                entry["unavailable"] = True
+        self.store_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _code, out, _err = self.run_main(["--list"])
+        self.assertIn("work", out, "the subscription name is shown")
+        self.assertIn("gone", out, "and an unavailable profile is marked")
+        self.assertNotIn(TEST_UUID, out)

@@ -51,6 +51,20 @@ from vlessp.links import parse_vless_uri
 from vlessp.profiles import Profile, ProfileStore
 from vlessp.secrets import SecretStore
 
+try:
+    # SecretStore account prefix for subscription URLs. Landed in
+    # ``vlessp.profiles`` alongside the store change; the fallback matches its
+    # value so this screen keeps working whichever side loads first.
+    from vlessp.profiles import SUB_SECRET_PREFIX as _SUB_SECRET_PREFIX
+except ImportError:  # pragma: no cover - the constant has landed
+    _SUB_SECRET_PREFIX = "subscription:"
+try:
+    # ``Profile.source`` prefix for imported nodes. Same value today, kept as
+    # a separate name so a future split of the two namespaces stays correct.
+    from vlessp.profiles import SUB_SOURCE_PREFIX as _SUB_SOURCE_PREFIX
+except ImportError:  # pragma: no cover - the constant has landed
+    _SUB_SOURCE_PREFIX = _SUB_SECRET_PREFIX
+
 # A canonical-format UUID used ONLY to satisfy the parser's syntax check while
 # re-validating an edited profile, whose real UUID lives in the Keychain and is
 # never loaded here. It is a constant in this source file: it is not a
@@ -938,7 +952,7 @@ class HelpScreen(ModalScreen[None]):
             "Profiles",
             (
                 ("l", "Add a vless:// link"),
-                ("s", "Add a subscription URL (arrives in V2)"),
+                ("s", "Add a subscription URL and import its nodes"),
                 ("e", "Edit the highlighted profile"),
                 ("i", "Change server address and port"),
                 ("d", "Delete the highlighted profile"),
@@ -948,6 +962,7 @@ class HelpScreen(ModalScreen[None]):
             "View",
             (
                 ("o", "Show or hide the Xray output pane"),
+                ("alt+t", "Cycle the colour theme"),
                 ("h", "This help"),
             ),
         ),
@@ -978,8 +993,220 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class AddSubscriptionScreen(ModalScreen[str | None]):
+    """Collect a subscription name and URL. Returns the NAME; None if cancelled.
+
+    Two inputs: a plain name and a masked URL (``password=True`` — the URL
+    embeds the token for the user's whole node list, so it is a credential and
+    is never shown on screen, in any widget, or in any error text).
+
+    This screen only *records* the URL: ``secrets.set()`` then ``store.save()``,
+    then ``dismiss(name)``. It never fetches and never reconciles — fetching
+    happens in an app worker after this screen closes, so a slow or dead
+    provider can never freeze a dialog the user is trying to escape.
+
+    Write ordering mirrors :meth:`AddProfileScreen._write`: the secret goes to
+    the Keychain first and the store is saved only after it lands, so a failed
+    ``secrets.set`` leaves nothing half-written. A ``store.save()`` failure
+    *after* a successful ``set`` leaves an orphaned Keychain item, which is
+    invisible and harmless — the same trade-off the add-profile path makes.
+
+    Duplicate detection prefers ``ProfileStore.by_source`` (the canonical
+    lookup) and falls back to scanning ``store.all()`` for a matching
+    ``source``. Either way no secret is read: names come from profile
+    sources, never from the Keychain, so compose does no Keychain I/O.
+    """
+
+    DEFAULT_CSS = """
+    AddSubscriptionScreen {
+        align: center middle;
+    }
+    AddSubscriptionScreen > VerticalScroll {
+        width: 64;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    AddSubscriptionScreen .title {
+        height: auto;
+        margin-bottom: 1;
+    }
+    AddSubscriptionScreen .existing {
+        height: auto;
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    AddSubscriptionScreen Input {
+        margin-bottom: 1;
+    }
+    AddSubscriptionScreen .actions {
+        height: auto;
+    }
+    AddSubscriptionScreen Button {
+        margin-right: 2;
+    }
+    AddSubscriptionScreen .error {
+        height: auto;
+        color: $error;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, store: ProfileStore, secrets: SecretStore) -> None:
+        super().__init__()
+        self._store = store
+        self._secrets = secrets
+
+    # -- names ----------------------------------------------------------
+
+    def _subscription_names(self) -> list[str]:
+        """Names of stored subscriptions, from profile sources only.
+
+        Screens show what exists so the user knows what they have; the URL
+        itself is never read here (that would be a Keychain read on the event
+        loop) and only names — which are not secrets — reach the widgets.
+        """
+        names: list[str] = []
+        for profile in self._store.all():
+            source = getattr(profile, "source", "") or ""
+            if isinstance(source, str) and source.startswith(_SUB_SOURCE_PREFIX):
+                names.append(source[len(_SUB_SOURCE_PREFIX):])
+        return sorted(names)
+
+    def _is_duplicate(self, name: str) -> bool:
+        """True when a subscription called ``name`` already exists.
+
+        Names are the identifier used in ``Profile.source``: a duplicate would
+        silently merge two different feeds, so it is refused with an inline
+        error instead.
+        """
+        source = f"{_SUB_SOURCE_PREFIX}{name}"
+        by_source = getattr(self._store, "by_source", None)
+        if callable(by_source):
+            try:
+                return len(by_source(source)) > 0
+            except Exception:  # noqa: BLE001 — fall back to the scan below
+                pass
+        return any(getattr(profile, "source", "") == source for profile in self._store.all())
+
+    # -- composition ----------------------------------------------------
+
+    def compose(self) -> ComposeResult:
+        names = self._subscription_names()
+        existing = (
+            f"Existing subscriptions: {', '.join(names)}" if names else "No subscriptions yet."
+        )
+        with VerticalScroll():
+            yield Static(Text("Add subscription"), classes="title")
+            yield Static(Text(existing), classes="existing", id="existing")
+            yield Input(placeholder="name — e.g. provider-a", id="name")
+            # password=True so the token-bearing URL is masked on screen — it
+            # is a credential and shoulder-surfing it out of a screenshot is a
+            # real risk, exactly as with the vless:// link field.
+            yield Input(placeholder="https://…", password=True, id="url")
+            yield Static("", id="error", classes="error")
+            with Horizontal(classes="actions"):
+                yield Button("Add", id="confirm", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#name", Input).focus()
+
+    # -- input handling -------------------------------------------------
+
+    @on(Input.Submitted, "#name")
+    def _name_submitted(self) -> None:
+        self.query_one("#url", Input).focus()
+
+    @on(Input.Submitted, "#url")
+    def _url_submitted(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#confirm")
+    def _confirm_pressed(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel_pressed(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        """Abandon without writing anything. Safe at any stage."""
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        """Validate on the loop, then hand the Keychain write to a worker."""
+        name = self.query_one("#name", Input).value.strip()
+        url = self.query_one("#url", Input).value.strip()
+        if not name:
+            self._fail("Subscription name must not be empty.")
+            return
+        if self._is_duplicate(name):
+            # The name — not the URL — is echoed: names are identifiers, the
+            # URL is the credential.
+            self._fail(f'A subscription named "{name}" already exists.')
+            return
+        if not url:
+            self._fail("Paste a subscription URL first.")
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            # Same message the fetcher raises, so the dialog and the fetch
+            # teach one rule. Rejecting http:// here saves a round trip.
+            self._fail("Subscription URL must be an https:// URL.")
+            return
+        # All DOM work happens here on the event loop. The worker below only
+        # touches the Keychain and the store, exactly like the address
+        # screen's save: mutating a widget from a worker thread is not safe,
+        # and Textual will not stop us.
+        button = self.query_one("#confirm", Button)
+        button.disabled = True
+        button.label = "Saving…"
+        self.query_one("#error", Static).update("")
+        self._write(name, url)
+
+    @work(thread=True, exclusive=True, group="subscription-write")
+    def _write(self, name: str, url: str) -> None:
+        """Store the URL in the Keychain, save the store, dismiss with the name.
+
+        Secret first, save second: if the Keychain write fails the store is
+        never touched, so a failed add cannot leave a half-written record.
+        """
+        account = f"{_SUB_SECRET_PREFIX}{name}"
+        try:
+            self._secrets.set(account, url)
+        except Exception as exc:  # noqa: BLE001 — backend-specific, must not escape a worker
+            message = str(exc) if isinstance(exc, AppError) else "the Keychain write failed."
+            self.app.call_from_thread(self._fail, message)
+            return
+        try:
+            self._store.save()
+        except AppError as exc:
+            self.app.call_from_thread(self._fail, str(exc))
+            return
+        self.app.call_from_thread(self.dismiss, name)
+
+    def _fail(self, message: str) -> None:
+        """Report a problem in place, next to the fields that caused it.
+
+        Messages are static text or the subscription *name* — never the URL —
+        so they can be shown verbatim. Re-enabling the button is essential:
+        leaving it disabled would strand the user in a dialog they can only
+        escape.
+        """
+        button = self.query_one("#confirm", Button)
+        button.disabled = False
+        button.label = "Add"
+        self.query_one("#error", Static).update(Text(message))
+
+
 __all__ = [
     "AddProfileScreen",
+    "AddSubscriptionScreen",
     "AddressScreen",
     "ConfirmScreen",
     "EditProfileScreen",

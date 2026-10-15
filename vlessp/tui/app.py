@@ -45,8 +45,17 @@ from textual.widgets import Footer, Header, Static
 
 from vlessp import APP_NAME
 from vlessp.errors import AppError
-from vlessp.profiles import ProfileStore
-from vlessp.tui.screens import AddProfileScreen, AddressScreen, ConfirmScreen, EditProfileScreen, HelpScreen
+from vlessp.profiles import SUB_SECRET_PREFIX, SUB_SOURCE_PREFIX, ProfileStore
+from vlessp.subscriptions import fetch_subscription, parse
+from vlessp.tui.screens import (
+    AddProfileScreen,
+    AddressScreen,
+    AddSubscriptionScreen,
+    ConfirmScreen,
+    EditProfileScreen,
+    HelpScreen,
+)
+from vlessp.tui.theme import apply_theme, next_theme, register_all
 from vlessp.tui.widgets import ProfileTable, StatusBar
 
 if TYPE_CHECKING:
@@ -142,6 +151,7 @@ class VlessApp(App[None]):
         # View and app.
         Binding("o", "toggle_log", "Output"),
         Binding("h", "show_help", "Help"),
+        Binding("alt+t", "cycle_theme", "Theme"),
         Binding("q", "quit_app", "Quit"),
         # Hidden aliases: advertised in the help overlay rather than the footer.
         Binding("enter", "connect_row", "", show=False, priority=True),
@@ -233,6 +243,9 @@ class VlessApp(App[None]):
         yield StatusBar(id="status")
 
     def on_mount(self) -> None:
+        # Themes register here rather than lazily inside the key handler: the
+        # first alt+t would otherwise repaint the whole screen as it registers.
+        register_all(self)
         self.query_one(ProfileTable).focus()
         # The log pane starts collapsed: it is a diagnostic surface, not part of
         # the main workflow, and an always-open pane would halve the table.
@@ -376,24 +389,111 @@ class VlessApp(App[None]):
         self.push_screen(AddressScreen(self._store, profile), callback=self._on_profile_closed)
 
     def action_add_subscription(self) -> None:
-        """``s`` — reserved for subscription import, which lands in V2.
+        """``s`` — add a subscription URL, then import its nodes.
 
-        Bound and explained rather than left unbound. A key that silently does
-        nothing is worse than one that says why: the design decisions are
-        already recorded in ``docs/V1/05-v2-parked.md``, so the feature is
-        planned rather than forgotten, and the keymap will not have to change
-        when it arrives.
+        The modal only records the URL; importing happens here in a worker once
+        it closes. Keeping the fetch out of the dialog matters because a slow or
+        dead provider would otherwise freeze a form the user is trying to escape.
         """
         if not self._on_main_screen():
             return
-        message = (
-            "Subscriptions arrive in V2. The format and refresh policy are "
-            "already decided - see docs/V1/05-v2-parked.md. Use l for a single link."
+        if self._secrets is None:
+            self.notify(
+                "No secret backend is available; subscriptions cannot be added.",
+                severity="error",
+                markup=False,
+            )
+            return
+        self.push_screen(
+            AddSubscriptionScreen(self._store, self._secrets),
+            callback=self._on_subscription_closed,
         )
-        # Both channels: a toast for right now, and a log note because a toast
-        # disappears before most people have finished reading it.
-        self._note(message)
-        self.notify(message, severity="information", markup=False)
+
+    def _on_subscription_closed(self, name: str | None) -> None:
+        """Modal callback: ``None`` cancelled, otherwise fetch and import."""
+        self._reload_table()
+        if name is None:
+            return
+        self.refresh_subscription(name)
+
+    def refresh_subscription(self, name: str) -> None:
+        """Fetch one subscription and reconcile its nodes. Safe to call twice."""
+        if self._switching:
+            return
+        self._begin_switch()
+        self._note(f"fetching subscription {name}…")
+        self._subscription_worker(name)
+
+    @work(thread=True, exclusive=True, group="switch")
+    def _subscription_worker(self, name: str) -> None:
+        """Fetch + import off the event loop.
+
+        Credential discipline: the URL comes from the Keychain and goes straight
+        into httpx. It is never logged, never put in a widget, and never
+        interpolated into an error — a subscription URL grants access to the
+        user's entire node list. Errors reach the UI by name, never by content.
+        """
+        try:
+            url = self._secrets.get(f"{SUB_SECRET_PREFIX}{name}")
+        except AppError as exc:
+            self.app.call_from_thread(self._subscription_failed, name, str(exc))
+            return
+        try:
+            body = fetch_subscription(url)
+        except AppError as exc:
+            self.app.call_from_thread(self._subscription_failed, name, str(exc))
+            return
+        subscription = parse(body)
+        if not subscription.nodes:
+            # A 200 that yields nothing is almost always a login page or an
+            # error message, not an empty feed. Reconciling it would flag every
+            # node in this subscription unavailable, so refuse instead.
+            reason = "returned no vless:// links"
+            if subscription.issues:
+                reason = f"returned no usable links ({len(subscription.issues)} skipped)"
+            self.app.call_from_thread(self._subscription_failed, name, reason)
+            return
+        try:
+            result = self._store.reconcile(
+                subscription.nodes,
+                source=f"{SUB_SOURCE_PREFIX}{name}",
+                secrets=self._secrets,
+            )
+        except AppError as exc:
+            self.app.call_from_thread(self._subscription_failed, name, str(exc))
+            return
+        summary = (
+            f"subscription {name}: {len(result.added)} new, {len(result.updated)} updated, "
+            f"{len(result.marked_unavailable)} unavailable"
+        )
+        if subscription.issues:
+            summary += f", {len(subscription.issues)} line(s) skipped"
+        self.app.call_from_thread(self._subscription_succeeded, summary)
+
+    def _subscription_succeeded(self, summary: str) -> None:
+        self._switching = False
+        self._last_error = None
+        self._note(summary)
+        self._reload_table()
+        self.notify(summary, severity="information", markup=False)
+
+    def _subscription_failed(self, name: str, reason: str) -> None:
+        self._switching = False
+        message = f"subscription {name} failed: {reason}"
+        self._last_error = message
+        self._note(f"error: {message}")
+        self.notify(message, title="Subscription failed", severity="error", markup=False)
+
+    def action_cycle_theme(self) -> None:
+        """``alt+t`` — step to the next theme.
+
+        Cycles instantly rather than opening a picker: while you are choosing a
+        theme, the fastest loop is the one with nothing to dismiss.
+        """
+        if not self._on_main_screen():
+            return
+        applied = apply_theme(self, next_theme(self.theme))
+        self.notify(f"theme: {applied}", severity="information", markup=False)
 
     def action_show_help(self) -> None:
         """``h`` — open the key reference."""

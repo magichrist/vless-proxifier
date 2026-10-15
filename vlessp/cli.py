@@ -45,9 +45,10 @@ from typing import Any
 from . import APP_NAME
 from .errors import AppError
 from .links import MAX_URI_BYTES, build_xray_config, parse_vless_uri
-from .profiles import ProfileStore
+from .profiles import SUB_SECRET_PREFIX, SUB_SOURCE_PREFIX, ProfileStore
 from .proxy import ProxyService
 from .secrets import MacOSKeychain, NullSecretStore, SecretStore
+from .subscriptions import fetch_subscription, parse
 from .xray import XrayProcess, app_data_dir, resolve_xray
 
 __all__ = ["build_parser", "main"]
@@ -153,6 +154,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="download and verify the latest stable official Xray release",
     )
+    parser.add_argument(
+        "--sub",
+        metavar="NAME",
+        help="fetch and import a named subscription (prompts for the URL the first time)",
+    )
+    parser.add_argument(
+        "--refresh-subs",
+        dest="refresh_subs",
+        action="store_true",
+        help="re-fetch every stored subscription",
+    )
     return parser
 
 
@@ -175,8 +187,28 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
     if args.check and args.list_profiles:
         raise AppError("--check cannot be combined with --list.")
+    if args.sub or args.refresh_subs:
+        # Subscription work is a fetch-and-import, not a connection, so pairing it
+        # with a link source or --check would leave the user guessing which of the
+        # two they just ran. Refuse rather than silently ignore one.
+        if args.link or args.link_file:
+            raise AppError("--sub/--refresh-subs cannot be combined with --link or --link-file.")
+        if args.profile:
+            raise AppError("--sub/--refresh-subs cannot be combined with --profile.")
+        if args.check:
+            raise AppError("--sub/--refresh-subs cannot be combined with --check.")
+    if args.sub and args.refresh_subs:
+        # Both is redundant rather than contradictory: refreshing everything
+        # already includes the named one. Do the cheap thing and say so.
+        print(
+            "note: --refresh-subs already covers --sub; refreshing every subscription.",
+            file=sys.stderr,
+        )
+        args.sub = None
 
     http_addr = _http_addr(args)
+    if args.sub or args.refresh_subs:
+        return _run_subscriptions(args)
     if args.tui:
         return _run_tui(args, http_addr)
     if args.list_profiles:
@@ -223,7 +255,10 @@ def _run_list() -> int:
     if not profiles:
         print("No profiles saved yet. Run the UI to add one: python3 vless_proxy.py")
         return 0
-    header = f"{'LABEL':<18} {'SERVER':<18} {'PORT':>5}  {'SEC':<7} {'TRANSPORT':<10} {'LATENCY':>7}  STATE"
+    header = (
+        f"{'LABEL':<18} {'SERVER':<18} {'PORT':>5}  {'SEC':<7} {'TRANSPORT':<10} "
+        f"{'LATENCY':>7}  {'SOURCE':<10}  STATE"
+    )
     print(header)
     print("-" * len(header))
     for profile in profiles:
@@ -232,18 +267,142 @@ def _run_list() -> int:
         state = []
         if profile.id == store.active_id:
             state.append("active")
+        if profile.unavailable:
+            state.append("gone")
         if profile.last_latency_ms is None:
             state.append("untested")
+        # Only the subscription NAME is ever shown — never the source string
+        # verbatim, and never anything from the URL or the Keychain.
+        source = "-"
+        if profile.source.startswith(SUB_SOURCE_PREFIX):
+            source = _cell(profile.source[len(SUB_SOURCE_PREFIX) :], 10)
         print(
             f"{_cell(profile.label, 18):<18} "
             f"{_cell(str(link.get('server', '')), 18):<18} "
             f"{str(link.get('port', '')):>5}  "
             f"{_cell(str(link.get('security', '')), 7):<7} "
             f"{_cell(str(link.get('network', '')), 10):<10} "
-            f"{latency:>7}  {','.join(state)}"
+            f"{latency:>7}  {source:<10}  {','.join(state)}"
         )
     print(f"\n{len(profiles)} profile(s) in {store.path}")
     return 0
+
+
+def _run_subscriptions(args: argparse.Namespace) -> int:
+    """Fetch and import subscriptions, headlessly.
+
+    Credential discipline: a subscription URL grants access to the user's entire
+    node list, so it is read from the Keychain, used, and never printed — not
+    here, not in an error, not in the usage text. There is deliberately no flag
+    that takes a URL, because argv is visible to every process on the machine.
+
+    Refresh policy is S2: only when the user asked. No timers, no background
+    polling, because every fetch is a credential-bearing request to a third
+    party.
+    """
+    store = _load_store()
+    secrets = _secret_backend()
+    names: list[str] = []
+    if args.refresh_subs:
+        names.extend(_known_subscription_names(store))
+    if args.sub:
+        names.append(args.sub)
+    if not names:
+        print("No subscriptions are stored yet. Add one with: python3 vless_proxy.py --sub NAME")
+        return 0
+
+    failures = 0
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            _import_one_subscription(name, store, secrets)
+        except AppError as exc:
+            # One bad feed must not abort the rest: a provider being down is
+            # exactly when you most want the others refreshed.
+            print(f"{name}: failed — {exc}", file=sys.stderr)
+            failures += 1
+    return 1 if failures else 0
+
+
+def _known_subscription_names(store: ProfileStore) -> list[str]:
+    """Every subscription name, from the store's own record plus its profiles.
+
+    The explicit list is the source of truth because a subscription that
+    currently imports nothing leaves no profile behind -- and a feed that broke
+    is exactly the one a refresh should still try. The sources of existing
+    profiles are folded in too, so a store written before the list existed still
+    refreshes whatever it has.
+    """
+    names = list(store.subscriptions)
+    for profile in store.all():
+        if not profile.source.startswith(SUB_SOURCE_PREFIX):
+            continue
+        name = profile.source[len(SUB_SOURCE_PREFIX) :]
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _import_one_subscription(name: str, store: ProfileStore, secrets: SecretStore) -> None:
+    """Fetch one subscription and reconcile it into the store."""
+    account = f"{SUB_SECRET_PREFIX}{name}"
+    try:
+        url = secrets.get(account)
+    except AppError:
+        if not sys.stdin.isatty():
+            raise AppError(
+                f"subscription {name} has no stored URL; add it interactively first."
+            ) from None
+        print(f"Paste the subscription URL for {name} (it is stored in the Keychain).")
+        typed = input("> ").strip()
+        if not typed.lower().startswith("https://"):
+            # Refused before it is ever stored, not after a failed fetch.
+            raise AppError("a subscription URL must start with https://") from None
+        secrets.set(account, typed)
+        url = typed
+
+    body = fetch_subscription(url)
+    subscription = parse(body)
+
+    if not subscription.nodes:
+        # The one way this feature can destroy data it did not mean to touch: a
+        # 200 returning a login page parses to zero nodes, and reconciling that
+        # would mark every node in this subscription unavailable.
+        detail = (
+            f"{len(subscription.issues)} line(s) skipped"
+            if subscription.issues
+            else "the response contained no vless:// links"
+        )
+        raise AppError(f"no usable nodes ({detail}); nothing was changed")
+
+    result = store.reconcile(
+        subscription.nodes,
+        source=f"{SUB_SOURCE_PREFIX}{name}",
+        secrets=secrets,
+    )
+    # Remembered only on success: reconcile already persisted, and a failed
+    # fetch must not leave a name behind that has never resolved to a URL.
+    if store.remember_subscription(name):
+        store.save()
+    # reconcile() persists itself; a second save here would be a redundant rewrite.
+    parts = [
+        f"{len(result.added)} new",
+        f"{len(result.updated)} updated",
+        f"{len(result.unchanged)} unchanged",
+    ]
+    if result.marked_unavailable:
+        parts.append(f"{len(result.marked_unavailable)} no longer offered")
+    if result.restored:
+        parts.append(f"{len(result.restored)} back")
+    line = f"{name}: " + ", ".join(parts)
+    if subscription.was_base64:
+        line += " (base64 response)"
+    if subscription.issues:
+        line += f" — {len(subscription.issues)} line(s) skipped"
+    print(line)
 
 
 def _run_profile(args: argparse.Namespace, http_addr: str | None) -> int:

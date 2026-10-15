@@ -22,21 +22,25 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 try:
     import textual  # noqa: F401
     from textual.widgets import Button, Input, Select, Static
     from textual.widgets._select import InvalidSelectValueError
 
+    from vlessp.profiles import SUB_SECRET_PREFIX, SUB_SOURCE_PREFIX
     from vlessp.tui import (
         AddProfileScreen,
         AddressScreen,
+        AddSubscriptionScreen,
         ConfirmScreen,
         EditProfileScreen,
         HelpScreen,
         VlessApp,
     )
     from vlessp.tui.screens import build_validation_uri
+    from vlessp.tui.theme import DEFAULT_THEME_NAME, THEME_ORDER, THEMES
     from vlessp.tui.widgets import DASH, ProfileTable, StatusBar
 
     TEXTUAL_IMPORT_ERROR: Exception | None = None
@@ -63,6 +67,11 @@ if TEXTUAL_IMPORT_ERROR is not None:  # pragma: no cover - environment dependent
 # end up in the secret store and nowhere else.
 TEST_UUID = "11111111-2222-4333-8444-555555555555"
 OTHER_UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+# Fake subscription URLs used only as test input. Like TEST_UUID they are the
+# values that must end up in the secret store and nowhere else.
+SUB_URL = "https://feeds.example.invalid/sub?token=secret-token-xyz"
+SUB_HTTP_URL = "http://feeds.example.invalid/sub?token=other-token-abc"
 
 
 def sample_link(uuid_value: str = TEST_UUID, **overrides: Any) -> dict[str, Any]:
@@ -977,21 +986,144 @@ class TestAddressScreen(TuiTestCase):
         self.assertEqual(self.store.get(profile.id).link["port"], 2083)
 
 
-class TestSubscriptionStub(TuiTestCase):
-    async def test_s_explains_itself_instead_of_doing_nothing(self) -> None:
-        """A key that silently no-ops is worse than one that says why."""
-        await self.settle()
-        self.add_profile("alpha")
-        self.app._reload_table()
-        await self.settle()
+class TestSubscriptions(TuiTestCase):
+    """``s`` records a URL in the modal; importing happens in a worker after."""
 
-        await self.pilot.press("s")
+    def _stub_fetch(self, body: str) -> list[str]:
+        """Patch the fetcher for the whole test; return the list of URLs it is handed.
+
+        The patch must outlive this method: the worker runs later, on the event
+        loop, so a `with` block here would un-patch before it ever fired.
+        """
+        seen: list[str] = []
+        patcher = mock.patch("vlessp.tui.app.fetch_subscription", lambda url: seen.append(url) or body)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return seen
+
+    async def test_s_opens_the_subscription_modal(self) -> None:
         await self.settle()
+        await self.pilot.press("s")
+        await self.pilot.pause()
+        self.assertIsInstance(self.app.screen, AddSubscriptionScreen)
+
+    async def test_a_saved_subscription_is_fetched_and_imported(self) -> None:
+        await self.settle()
+        self.secrets.set(f"{SUB_SECRET_PREFIX}work", "https://sub.example/list")
+        body = "\n".join(
+            [
+                f"vless://{TEST_UUID}@203.0.113.10:2083?type=tcp&security=tls&encryption=none#node-one",
+                f"vless://{OTHER_UUID}@198.51.100.7:443?type=ws&security=tls&encryption=none#node-two",
+            ]
+        )
+        seen = self._stub_fetch(body)
+        self.app.refresh_subscription("work")
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertEqual(seen, ["https://sub.example/list"], "the URL comes from the Keychain")
+        imported = self.store.by_source(f"{SUB_SOURCE_PREFIX}work")
+        self.assertEqual(len(imported), 2)
+        self.assertTrue(all(p.link.get("server") for p in imported))
+        self.assertTrue(any("2 new" in note for note in self.app._notes), self.app._notes)
+
+    async def test_imported_nodes_never_carry_a_uuid_in_the_store(self) -> None:
+        await self.settle()
+        self.secrets.set(f"{SUB_SECRET_PREFIX}work", "https://sub.example/list")
+        body = f"vless://{TEST_UUID}@203.0.113.10:2083?type=tcp&security=tls&encryption=none#node"
+        self._stub_fetch(body)
+        self.app.refresh_subscription("work")
+        await self.settle()
+        await self.pilot.pause()
+
+        text = self.path.read_text(encoding="utf-8")
+        self.assertNotIn(TEST_UUID, text, "a subscription UUID must never reach disk")
+        imported = self.store.by_source(f"{SUB_SOURCE_PREFIX}work")
+        self.assertEqual(self.secrets.items[imported[0].id], TEST_UUID, "it goes to the Keychain instead")
+
+    async def test_an_empty_response_does_not_flag_the_whole_subscription(self) -> None:
+        """A 200 that yields nothing is a login page, not an empty feed.
+
+        Reconciling it would mark every node in this subscription unavailable —
+        the one way this feature can destroy data it did not mean to touch.
+        """
+        await self.settle()
+        existing = self.add_profile("kept")
+        self.store.update(existing.id, link={**existing.link, "server": "203.0.113.10"})
+        self.store.save()
+        self.secrets.set(f"{SUB_SECRET_PREFIX}work", "https://sub.example/list")
+        self._stub_fetch("<html><body>Sign in to continue</body></html>")
+        self.app.refresh_subscription("work")
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertIn("no usable links", "\n".join(self.app._notes))
+        self.assertFalse(self.store.get(existing.id).unavailable, "an empty fetch must change nothing")
+        self.assertIsNotNone(self.store.get(existing.id), "and must delete nothing")
+
+    async def test_a_fetch_failure_is_reported_without_leaking_the_url(self) -> None:
+        await self.settle()
+        secret_url = "https://sub.example/list?token=SUPERSECRETTOKEN"
+        self.secrets.set(f"{SUB_SECRET_PREFIX}work", secret_url)
+        with mock.patch(
+            "vlessp.tui.app.fetch_subscription",
+            side_effect=AppError("could not reach the subscription service (ConnectError)."),
+        ):
+            self.app.refresh_subscription("work")
+            await self.settle()
+            await self.pilot.pause()
+
         notes = "\n".join(self.app._notes)
-        self.assertIn("V2", notes)
-        self.assertIn("05-v2-parked.md", notes, "the decision record should be discoverable in place")
-        self.assertIs(self.app.screen, self.app.screen_stack[0], "s must not open a modal")
-        self.assertTrue(self.app.is_running)
+        self.assertIn("failed", notes)
+        self.assertNotIn("SUPERSECRETTOKEN", notes, "the subscription URL is a credential")
+        self.assertNotIn("sub.example", notes)
+        self.assertFalse(self.app._switching, "the switch guard must be released on failure")
+
+    async def test_a_second_press_while_fetching_is_ignored(self) -> None:
+        await self.settle()
+        self.secrets.set(f"{SUB_SECRET_PREFIX}work", "https://sub.example/list")
+        seen = self._stub_fetch("vless://x@203.0.113.10:2083?type=tcp#n")
+        self.app.refresh_subscription("work")
+        self.app.refresh_subscription("work")
+        await self.settle()
+        self.assertEqual(len(seen), 1, "the switch guard serialises overlapping fetches")
+
+
+class TestThemes(TuiTestCase):
+    async def test_alt_t_cycles_through_every_theme_and_wraps(self) -> None:
+        await self.settle()
+        seen = [self.app.theme]
+        for _ in range(len(THEME_ORDER)):
+            await self.pilot.press("alt+t")
+            await self.settle()
+            await self.pilot.pause()
+            seen.append(self.app.theme)
+        self.assertEqual(seen[1:], list(THEME_ORDER[1:]) + [THEME_ORDER[0]])
+        self.assertEqual(seen[0], DEFAULT_THEME_NAME, "the pre-existing look is kept first")
+
+    async def test_the_first_theme_is_the_one_that_worked_before(self) -> None:
+        """Switching themes is additive: never pressing alt+t changes nothing."""
+        await self.settle()
+        self.assertEqual(self.app.theme, DEFAULT_THEME_NAME)
+
+    async def test_a_theme_actually_repaints(self) -> None:
+        """Setting the reactive is not the same as the screen changing."""
+        await self.settle()
+        before = self.app.styles.background
+        await self.pilot.press("alt+t")
+        await self.settle()
+        await self.pilot.pause()
+        self.assertIn(self.app.theme, THEMES)
+        self.assertNotEqual(before, self.app.styles.background)
+
+    async def test_cycling_reaches_both_new_themes(self) -> None:
+        await self.settle()
+        for _ in range(len(THEME_ORDER)):
+            await self.pilot.press("alt+t")
+            await self.settle()
+            await self.pilot.pause()
+        self.assertIn("gummy", THEME_ORDER)
+        self.assertIn("cyber-female", THEME_ORDER)
 
 
 class TestBuildValidationUri(unittest.IsolatedAsyncioTestCase):
@@ -1330,5 +1462,390 @@ class TestSeamGaps(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("25.9.9", rendered)
 
 
+class TestAddSubscriptionScreen(TuiTestCase):
+    """The subscription dialog records the URL and nothing else.
+
+    These tests push the screen directly: ``s`` is still the V2 stub in
+    ``app.py`` (the integrator wires it), so ``s`` cannot open this screen yet.
+    """
+
+    async def _push(self, screen: AddSubscriptionScreen) -> list[Any]:
+        """Push the screen and capture whatever it dismisses with."""
+        seen: list[Any] = []
+        await self.app.push_screen(screen, seen.append)
+        await self.pilot.pause()
+        return seen
+
+    def _rendered_statics(self, screen: AddSubscriptionScreen) -> list[str]:
+        return [str(widget.render()) for widget in screen.query(Static)]
+
+    async def test_save_stores_the_url_as_a_secret_and_dismisses_with_the_name(self) -> None:
+        await self.settle()
+        import vlessp.subscriptions as subscriptions
+
+        fetch_calls: list[str] = []
+        original_fetch = subscriptions.fetch_subscription
+
+        def spy(url: str, **kwargs: Any) -> str:
+            fetch_calls.append(url)
+            return original_fetch(url, **kwargs)
+
+        subscriptions.fetch_subscription = spy  # type: ignore[method-assign]
+        self.addCleanup(setattr, subscriptions, "fetch_subscription", original_fetch)
+
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "news"
+        screen.query_one("#url", Input).value = SUB_URL
+        screen.query_one("#confirm", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertEqual(seen, ["news"], "save dismisses with the name, not None")
+        self.assertEqual(self.secrets.items, {"subscription:news": SUB_URL})
+        self.assertTrue(self.path.exists(), "the store is saved after the secret lands")
+        self.assertEqual(fetch_calls, [], "the dialog records; it never fetches")
+        for rendered in self._rendered_statics(screen):
+            self.assertNotIn(SUB_URL, rendered, "the credential must appear in no widget")
+
+    async def test_escape_dismisses_with_none_and_writes_nothing(self) -> None:
+        await self.settle()
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "abandoned"
+        screen.query_one("#url", Input).value = SUB_URL
+        await self.pilot.press("escape")
+        await self.settle()
+
+        self.assertEqual(seen, [None])
+        self.assertEqual(self.secrets.items, {})
+        self.assertEqual(self.store.all(), [])
+        self.assertFalse(self.path.exists(), "escape must not write anything")
+
+    async def test_cancel_dismisses_with_none_and_writes_nothing(self) -> None:
+        await self.settle()
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "abandoned"
+        screen.query_one("#url", Input).value = SUB_URL
+        screen.query_one("#cancel", Button).press()
+        await self.settle()
+
+        self.assertEqual(seen, [None])
+        self.assertEqual(self.secrets.items, {})
+        self.assertEqual(self.store.all(), [])
+        self.assertFalse(self.path.exists(), "cancel must not write anything")
+
+    async def test_a_non_https_url_is_refused_with_an_inline_error(self) -> None:
+        await self.settle()
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "work"
+        screen.query_one("#url", Input).value = SUB_HTTP_URL
+        screen.query_one("#confirm", Button).press()
+        await self.pilot.pause()
+
+        error = str(screen.query_one("#error", Static).render())
+        self.assertIn("https", error)
+        self.assertNotIn(SUB_HTTP_URL, error, "the refused URL must not be echoed")
+        self.assertEqual(seen, [], "a refused save must not dismiss")
+        self.assertEqual(self.secrets.items, {})
+        self.assertFalse(self.path.exists())
+        self.assertIsInstance(self.app.screen, AddSubscriptionScreen)
+        for rendered in self._rendered_statics(screen):
+            self.assertNotIn(SUB_HTTP_URL, rendered)
+
+    async def test_an_empty_name_is_refused(self) -> None:
+        await self.settle()
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#url", Input).value = SUB_URL
+        screen.query_one("#confirm", Button).press()
+        await self.pilot.pause()
+
+        error = str(screen.query_one("#error", Static).render())
+        self.assertIn("name", error.lower())
+        self.assertEqual(seen, [])
+        self.assertEqual(self.secrets.items, {})
+        self.assertFalse(self.path.exists())
+        self.assertIsInstance(self.app.screen, AddSubscriptionScreen)
+        for rendered in self._rendered_statics(screen):
+            self.assertNotIn(SUB_URL, rendered)
+
+    def _seed_subscription(self, name: str, label: str = "node-a") -> None:
+        """Import one node through the real ``reconcile`` path.
+
+        Seeds a profile with ``source == f"subscription:{name}"`` exactly as a
+        fetch would, so the duplicate and display tests below exercise the
+        production lookup instead of fakes.
+        """
+        from vlessp.subscriptions import SubNode
+
+        self.store.reconcile(
+            [SubNode(label=label, link=sample_link(), line_number=1)],
+            source=f"subscription:{name}",
+            secrets=self.secrets,
+        )
+
+    async def test_a_duplicate_name_is_refused(self) -> None:
+        await self.settle()
+        self._seed_subscription("news")
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "news"
+        screen.query_one("#url", Input).value = SUB_URL
+        screen.query_one("#confirm", Button).press()
+        await self.pilot.pause()
+
+        self.assertIn("already exists", str(screen.query_one("#error", Static).render()))
+        self.assertEqual(seen, [], "a refused save must not dismiss")
+        self.assertNotIn("subscription:news", self.secrets.items)
+        self.assertIsInstance(self.app.screen, AddSubscriptionScreen)
+
+    async def test_a_duplicate_name_is_refused_without_by_source(self) -> None:
+        """Fallback path: the ``source`` fields are scanned directly."""
+        await self.settle()
+        self._seed_subscription("news")
+        self.store.by_source = None  # type: ignore[method-assign]
+        self.addCleanup(delattr, self.store, "by_source")
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "news"
+        screen.query_one("#url", Input).value = SUB_URL
+        screen.query_one("#confirm", Button).press()
+        await self.pilot.pause()
+
+        self.assertIn("already exists", str(screen.query_one("#error", Static).render()))
+        self.assertEqual(seen, [])
+        self.assertNotIn("subscription:news", self.secrets.items)
+
+    async def test_the_screen_lists_existing_subscription_names(self) -> None:
+        """Only names are shown — the URLs stay in the Keychain, unread."""
+        await self.settle()
+        self._seed_subscription("news")
+        self._seed_subscription("work", label="node-b")
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        await self._push(screen)
+
+        existing = str(screen.query_one("#existing", Static).render())
+        self.assertIn("news", existing)
+        self.assertIn("work", existing)
+
+    async def test_a_keychain_failure_writes_nothing_and_keeps_the_modal_open(self) -> None:
+        await self.settle()
+        self.secrets.fail_on_set = True
+        screen = AddSubscriptionScreen(self.store, self.secrets)
+        seen = await self._push(screen)
+        screen.query_one("#name", Input).value = "news"
+        screen.query_one("#url", Input).value = SUB_URL
+        screen.query_one("#confirm", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertEqual(seen, [], "a failed save must not dismiss")
+        self.assertEqual(self.secrets.items, {})
+        self.assertFalse(self.path.exists(), "the store is never saved when the secret fails")
+        self.assertIsInstance(self.app.screen, AddSubscriptionScreen)
+        self.assertTrue(str(screen.query_one("#error", Static).render()))
+        for rendered in self._rendered_statics(screen):
+            self.assertNotIn(SUB_URL, rendered)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class _BadgingSubNode:
+    """Structural stand-in for ``subscriptions.SubNode``.
+
+    ``reconcile`` only ever reads ``label`` and ``link``, so importing through
+    the real store path needs nothing more — and going through it means these
+    tests exercise the same provenance the app's own fetch produces.
+    """
+
+    def __init__(self, label: str, link: dict[str, Any]) -> None:
+        self.label = label
+        self.link = link
+
+
+class TestTableBadging(TuiTestCase):
+    """S4's display rule: where a profile came from, and whether it is still offered.
+
+    Both states are cosmetic, which is the whole point. An imported node is an
+    ordinary profile, and one the provider has dropped is still fully usable, so
+    every test here asserts only that the table *says* these things — never that
+    it hides, greys out of reach, or refuses to connect to anything.
+
+    Imported in the class body rather than at the top of the file: this class was
+    appended late, and the shared import block above is shared with every other
+    test class in the module.
+    """
+
+    from vlessp.tui.widgets import SOURCE_NAME_MAX, UNAVAILABLE_MARK, UNAVAILABLE_STYLE
+
+    # -- helpers --------------------------------------------------------
+
+    def _import(
+        self,
+        source: str,
+        label: str = "node-one",
+        *,
+        uuid_value: str = TEST_UUID,
+        server: str = "203.0.113.10",
+    ) -> Profile:
+        """Import one node through ``ProfileStore.reconcile``, as a fetch does."""
+        node = _BadgingSubNode(label, sample_link(uuid_value, server=server))
+        result = self.store.reconcile([node], source=source, secrets=self.secrets)
+        self.assertEqual(len(result.added), 1, "the node became an ordinary profile")
+        return result.added[0]
+
+    def _drop_upstream(self, source: str) -> None:
+        """A later fetch that no longer lists the node — what sets ``unavailable``."""
+        result = self.store.reconcile([], source=source, secrets=self.secrets)
+        self.assertEqual(len(result.marked_unavailable), 1)
+
+    async def _reload(self) -> None:
+        self.app._reload_table()
+        await self.settle()
+
+    def _cells(self, profile_id: str) -> list[str]:
+        rows = self.table().row_values(profile_id)
+        assert rows is not None, f"no row for profile {profile_id}"
+        return rows
+
+    def _cell(self, profile_id: str, key: str) -> Any:
+        """The stored cell object, so a test can read a style and not just its text."""
+        from rich.text import Text
+
+        table = self.table()
+        for row in table.ordered_rows:
+            if row.key is not None and str(row.key.value) == profile_id:
+                cell = table.get_cell(row.key, key)
+                assert isinstance(cell, Text)
+                return cell
+        self.fail(f"no row for profile {profile_id}")
+
+    def _rendered(self) -> str:
+        """The lines the table actually paints.
+
+        Not ``str(table.render())``: ``DataTable.render()`` returns a Panel whose
+        ``str()`` is a repr, so asserting against it would pass for anything.
+        """
+        table = self.table()
+        return "\n".join(table.render_line(y).text for y in range(table.size.height))
+
+    # -- the source badge ----------------------------------------------
+
+    async def test_a_hand_added_profile_carries_no_source_badge(self) -> None:
+        await self.settle()
+        profile = self.add_profile("home")
+        await self._reload()
+
+        label = self._cells(profile.id)[0]
+        self.assertEqual(label, "home", "a hand-added profile renders exactly as it always did")
+        self.assertNotIn("sub:", label)
+        self.assertNotIn("[", label)
+
+    async def test_an_imported_profile_is_badged_with_its_subscription_name(self) -> None:
+        await self.settle()
+        profile = self._import(f"{SUB_SOURCE_PREFIX}work")
+        await self._reload()
+
+        self.assertEqual(self._cells(profile.id)[0], "node-one [sub:work]")
+        # The badge lives in the LABEL cell — no eighth column squeezes SERVER.
+        self.assertEqual(len(self._cells(profile.id)), 7)
+
+    async def test_a_long_subscription_name_is_truncated(self) -> None:
+        await self.settle()
+        profile = self._import(f"{SUB_SOURCE_PREFIX}a-very-long-subscription-name")
+        await self._reload()
+
+        label = self._cells(profile.id)[0]
+        self.assertEqual(label, "node-one [sub:a-very-…]")
+        self.assertNotIn("a-very-long-subscription-name", label)
+        # A name that already fits is left alone; only the over-long one loses anything.
+        exact = self._import(f"{SUB_SOURCE_PREFIX}12345678", "node-two", server="198.51.100.7")
+        await self._reload()
+        self.assertEqual(self._cells(exact.id)[0], "node-two [sub:12345678]")
+        self.assertEqual(len("a-very-…"), self.SOURCE_NAME_MAX)
+
+    async def test_an_unexpected_source_shape_degrades_to_showing_the_source(self) -> None:
+        """A bare id, or a name full of characters a badge should not choke on."""
+        await self.settle()
+        bare = self._import("bare-id", "node-one")
+        odd = self._import(f"{SUB_SOURCE_PREFIX}[red] /a", "node-two", server="198.51.100.7")
+        await self._reload()
+
+        self.assertEqual(self._cells(bare.id)[0], "node-one [sub:bare-id]")
+        self.assertEqual(self._cells(odd.id)[0], "node-two [sub:[red] /a]")
+        self.assertEqual(self.store.get(bare.id).source, "bare-id", "the store is not rewritten")
+
+    # -- unavailable rows ----------------------------------------------
+
+    async def test_an_unavailable_profile_is_still_listed_and_still_connects(self) -> None:
+        """Flagged, not taken away: a provider having a bad day is not a reason to
+        lose a working node."""
+        await self.settle()
+        profile = self._import(f"{SUB_SOURCE_PREFIX}work")
+        self._drop_upstream(f"{SUB_SOURCE_PREFIX}work")
+        self.assertTrue(self.store.get(profile.id).unavailable)
+        await self._reload()
+
+        self.assertEqual(self.table().row_count, 1, "a dropped node is flagged, never hidden")
+        self.assertEqual(self.table().selected_id(), profile.id)
+
+        await self.pilot.press("enter")
+        await self.settle()
+
+        self.assertIn(f"connect:{profile.id}", self.service.calls)
+        self.assertTrue(self.service.running)
+        self.assertEqual(self.store.active_id, profile.id)
+        self.assertEqual(self._cells(profile.id)[6], "live", "it is an ordinary live row once running")
+
+    async def test_an_unavailable_row_is_visually_distinct_from_an_idle_one(self) -> None:
+        await self.settle()
+        idle = self.add_profile("alpha")
+        gone = self._import(f"{SUB_SOURCE_PREFIX}work", "zeta")
+        self._drop_upstream(f"{SUB_SOURCE_PREFIX}work")
+        await self._reload()
+
+        self.assertEqual(self._cells(idle.id)[6], DASH, "idle keeps meaning exactly what it meant")
+        self.assertEqual(self._cells(gone.id)[6], self.UNAVAILABLE_MARK)
+        self.assertNotEqual(self._cells(gone.id)[6], self._cells(idle.id)[6])
+        # Dimmed too, so the difference survives being read at a glance, not parsed.
+        self.assertEqual(self._cell(gone.id, "label").style, self.UNAVAILABLE_STYLE)
+        self.assertEqual(self._cell(idle.id, "label").style, "")
+        for key in ("server", "port", "sec", "transport", "lat", "state"):
+            self.assertEqual(self._cell(gone.id, key).style, self.UNAVAILABLE_STYLE)
+
+    # -- leakage --------------------------------------------------------
+
+    async def test_a_label_containing_markup_renders_literally(self) -> None:
+        """``[red]`` in a label is a label, not a style tag."""
+        await self.settle()
+        profile = self.add_profile("[red]alpha")
+        await self._reload()
+
+        self.assertIn("[red]", self._cells(profile.id)[0])
+        self.assertIn("[red]alpha", self._rendered(), "the painted row shows it verbatim")
+
+    async def test_no_profile_uuid_reaches_any_cell(self) -> None:
+        await self.settle()
+        hand = self.add_profile("home", uuid_value=TEST_UUID)
+        imported = self._import(
+            f"{SUB_SOURCE_PREFIX}work", "node-one", uuid_value=OTHER_UUID, server="198.51.100.7"
+        )
+        self._drop_upstream(f"{SUB_SOURCE_PREFIX}work")  # the dimmed row is covered too
+        await self._reload()
+
+        # Both credentials really are held by the Keychain, so their absence from
+        # the table is a decision rather than an accident of never having been set.
+        self.assertEqual(self.secrets.items[hand.id], TEST_UUID)
+        self.assertEqual(self.secrets.items[imported.id], OTHER_UUID)
+        rendered = "\n".join(
+            [self._cells(hand.id)[0], self._cells(imported.id)[0], self._rendered()]
+        )
+        for secret in (TEST_UUID, OTHER_UUID):
+            self.assertNotIn(secret, rendered)
+            self.assertNotIn(secret.replace("-", ""), rendered, "nor the unhyphenated form")
+            self.assertNotIn(secret[:8], rendered, "nor any identifiable run of it")

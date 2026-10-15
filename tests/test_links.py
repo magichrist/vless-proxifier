@@ -510,6 +510,19 @@ class MessageSafetyTests(unittest.TestCase):
         f"vless://{UUID}@example.com:443?security=tls&type=tcp&sni=a&serverName=b",
         "vless://" + "x" * (MAX_URI_BYTES + 10),
         f"vless://{UUID}@example.com:443\n?type=tcp",
+        # Scheme and userinfo failures. These reach the "expected UUID@host:port"
+        # branch, whose message used to contain the literal scheme text and so
+        # tripped the project's own "no vless:// in errors" rule.
+        f"http://{UUID}@example.com:443?type=tcp",
+        "https://example.com:443?type=tcp",
+        "vless://example.com:443?type=tcp",
+        f"vless://{UUID}:secret-password@example.com:443?type=tcp",
+        # Attacker-controlled parameter names. A subscription author chooses
+        # these, so a name shaped like a credential must not reach an error
+        # message: that is a UUID leak with one extra hop.
+        f"vless://{UUID}@example.com:443?{UUID}=1&{UUID}=2",
+        f"vless://{UUID}@example.com:443?{UUID}=" + "z" * 5000,
+        f"vless://{UUID}@example.com:443?vless://{UUID}@evil.example:443=1",
     ]
 
     def test_no_failure_message_discloses_the_link(self):
