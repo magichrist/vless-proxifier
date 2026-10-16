@@ -440,6 +440,70 @@ class StatusBar(Static):
         self.set_class(not running, "stopped")
 
 
+class KeyHints(Static):
+    """Every key, always visible, and never truncated.
+
+    This replaces Textual's ``Footer``, which was the wrong tool here. The
+    footer renders one ``key description`` pair per binding on a single line
+    with no wrapping: twelve bindings came to **117 columns**, so on an
+    80-column terminal — the width this thing has to survive — the tail was
+    silently cut to an ellipsis. That hid ``q``, which is the last key anyone
+    wants hidden, and made the footer worse than useless: it looked complete
+    while lying about what was available.
+
+    So this is a deliberate replacement rather than an addition. It is laid out
+    as three short, grouped lines that fit a narrow terminal, and it carries
+    *every* binding. ``h`` remains for the long form with the reasoning.
+    """
+
+    DEFAULT_CSS = """
+    KeyHints {
+        height: auto;
+        padding: 0 1;
+        color: $text-muted;
+    }
+    KeyHints .key {
+        color: $text;
+        text-style: bold;
+    }
+    """
+
+    #: (group label, [(key, description), ...]) — mirrors ``VlessApp.BINDINGS``.
+    #: Kept as data rather than scraped from the bindings because grouping and
+    #: phrasing are the entire value here; a binding carries neither.
+    GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+        ("connect", (("c", "connect"), ("space", "stop/resume"), ("t", "test"))),
+        ("profiles", (("l", "add link"), ("s", "add sub"), ("e", "edit"), ("i", "ip/port"))),
+        ("more", (("d", "delete"), ("o", "output"), ("alt+t", "theme"), ("h", "help"), ("q", "quit"))),
+    )
+
+    #: Widest terminal this bar is built to survive. Measured against the
+    #: longest line in :data:`GROUPS` by a test, because getting this wrong is
+    #: the exact bug the widget exists to fix.
+    MAX_WIDTH = 80
+
+    def compose_hint(self) -> Text:
+        """Render the hint lines.
+
+        Built as one ``Text`` per group and joined, so a theme change restyles
+        it without a re-render and the markup cannot be misparsed by a caller.
+        """
+        out = Text()
+        for index, (label, entries) in enumerate(self.GROUPS):
+            if index:
+                out.append("\n")
+            out.append(f"{label}  ", style="dim")
+            for position, (key, description) in enumerate(entries):
+                if position:
+                    out.append("  ·  ", style="dim")
+                out.append(f" {key} ", style="bold reverse")
+                out.append(f" {description}", style="dim")
+        return out
+
+    def on_mount(self) -> None:
+        self.update(self.compose_hint())
+
+
 class ProfileDetail(Static):
     """Sparkline and stats for one profile: the answer to "is it getting worse?".
 
@@ -561,6 +625,7 @@ __all__ = [
     "SOURCE_NAME_MAX",
     "UNAVAILABLE_MARK",
     "UNAVAILABLE_STYLE",
+    "KeyHints",
     "ProfileDetail",
     "ProfileTable",
     "StatusBar",

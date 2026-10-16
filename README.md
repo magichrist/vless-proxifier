@@ -74,7 +74,25 @@ upstream is reachable; the curl calls are the end-to-end check.
 | `q` | Quit | terminates Xray cleanly |
 
 `Enter` still connects the highlighted row and `a` still adds a link, so the V1 muscle memory
-keeps working. Both are hidden from the footer and listed in `h`.
+keeps working. Both are aliases and are not advertised in the key hints — `h` lists them.
+
+### The key hints
+
+Every key is listed under the table, permanently visible:
+
+```
+connect    c  connect  ·  space  stop/resume  ·  t  test
+profiles   l  add link  ·  s  add sub  ·  e  edit  ·  i  ip/port
+more       d  delete  ·  o  output  ·  alt+t  theme  ·  h  help  ·  q  quit
+```
+
+This replaces Textual's built-in `Footer`, which was the wrong tool here. The footer renders one
+key/label pair per binding on a single un-wrapped line: twelve bindings came to **117 columns**,
+so on an 80-column terminal the tail was silently cut to an ellipsis — hiding `q`, the last key
+anyone wants hidden. It looked complete while lying about what was available.
+
+The hints are laid out to fit 80 columns, and a test measures every line against that width so
+the truncation bug cannot come back quietly.
 
 ### Themes
 

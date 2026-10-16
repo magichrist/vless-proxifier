@@ -44,6 +44,7 @@ try:
     from vlessp.tui.widgets import (
         DASH,
         PARTIAL_BLOCKS,
+        KeyHints,
         ProfileDetail,
         ProfileTable,
         StatusBar,
@@ -2099,3 +2100,62 @@ class TestNoSpuriousToasts(TuiTestCase):
         finally:
             self.app.notify = real  # type: ignore[method-assign]
         self.assertEqual(seen, [], f"_refresh_detail must stay silent, got: {seen}")
+
+
+class TestKeyHints(TuiTestCase):
+    """The always-visible key list.
+
+    This widget exists because Textual's ``Footer`` cannot be used here: twelve
+    bindings on one un-wrapped line came to 117 columns, so it silently
+    truncated to an ellipsis on an 80-column terminal — hiding ``q``, the last
+    key anyone wants hidden. These tests are the regression guard for that.
+    """
+
+    def test_every_line_fits_the_terminal(self) -> None:
+        """The whole point. If this fails, keys go missing again."""
+        hints = KeyHints()
+        lines = hints.compose_hint().plain.split("\n")
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertLessEqual(
+                    len(line), KeyHints.MAX_WIDTH,
+                    f"{len(line)} columns: {line!r}",
+                )
+
+    def test_no_line_is_empty(self) -> None:
+        for line in KeyHints().compose_hint().plain.split("\n"):
+            self.assertTrue(line.strip())
+
+    def test_every_visible_binding_is_advertised(self) -> None:
+        """A key that exists but is unlisted is a key nobody will find."""
+        bound = {
+            binding.key
+            for binding in VlessApp.BINDINGS
+            if binding.show and not binding.key.startswith("^")
+        }
+        advertised = {
+            key
+            for _label, entries in KeyHints.GROUPS
+            for key, _description in entries
+        }
+        self.assertEqual(
+            bound - advertised, set(), "bindings missing from the key hints"
+        )
+        self.assertEqual(
+            advertised - bound, set(), "hints for keys that are not bound"
+        )
+
+    async def test_quit_is_always_visible(self) -> None:
+        """The key that must never be the one that gets truncated."""
+        rendered = KeyHints().compose_hint().plain
+        self.assertIn("q", rendered)
+        self.assertIn("quit", rendered)
+
+    async def test_the_hints_sit_under_the_table(self) -> None:
+        await self.settle()
+        self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        self.assertIsInstance(self.app.query_one(KeyHints), KeyHints)
+        # And it has actually rendered, rather than sitting there empty.
+        self.assertTrue(str(self.app.query_one(KeyHints).render()).strip())

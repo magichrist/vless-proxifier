@@ -41,7 +41,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Header, Static
 
 from vlessp import APP_NAME
 from vlessp.errors import AppError
@@ -56,7 +56,7 @@ from vlessp.tui.screens import (
     HelpScreen,
 )
 from vlessp.tui.theme import apply_theme, next_theme, register_all
-from vlessp.tui.widgets import ProfileDetail, ProfileTable, StatusBar
+from vlessp.tui.widgets import KeyHints, ProfileDetail, ProfileTable, StatusBar
 
 if TYPE_CHECKING:
     from vlessp.profiles import Profile
@@ -238,12 +238,15 @@ class VlessApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield ProfileTable(id="profiles")
-        # The detail panel sits between the table and the log: the log is a
-        # diagnostic surface that is hidden by default, so this is the only
-        # always-visible readout below the table.
+        # The key hints go directly under the table, where the eye already is,
+        # rather than in the footer slot at the very bottom. Textual's Footer is
+        # gone on purpose: twelve bindings do not fit one un-wrapped line, and it
+        # was silently truncating them — hiding `q` along the way.
+        yield KeyHints()
+        # The detail panel sits below the table: the log is a diagnostic surface
+        # that is hidden by default, so this is the only always-visible readout.
         yield ProfileDetail(id="detail")
         yield Static("", id="log-pane")
-        yield Footer()
         yield StatusBar(id="status")
 
     def on_mount(self) -> None:
