@@ -783,14 +783,25 @@ class VlessApp(App[None]):
             return None
 
     def _selected_profile(self) -> Profile | None:
+        """The profile under the cursor, or ``None``. **Silent by contract.**
+
+        A getter that reports its own failures is a bug. This one runs on every
+        cursor movement *and* after every table rebuild, so a ``notify()`` here
+        fires repeatedly per keypress and fills the screen with toasts nobody
+        asked for. Rebuilding briefly empties the table, which made "no
+        selection" the normal transient state rather than a problem worth
+        interrupting for.
+
+        The actions that genuinely need a selection already say so themselves —
+        ``action_connect_row`` and friends notify once, on a deliberate action.
+        That is where this belongs.
+        """
         profile_id = self._selected_id()
         if profile_id is None:
-            self.notify("No profile selected.", severity="warning", markup=False)
             return None
         try:
             return self._store.get(profile_id)
-        except AppError as exc:
-            self.notify(str(exc), severity="error", markup=False)
+        except AppError:
             return None
 
 

@@ -2007,3 +2007,95 @@ class TestLatencyGraphicsPure(unittest.TestCase):
         for ms in (10, None, 30):
             self.store.set_latency(profile.id, ms)
         self.assertEqual(self.store.get(profile.id).latency_history, (10, None, 30))
+
+
+class TestNoSpuriousToasts(TuiTestCase):
+    """Ordinary navigation must be silent.
+
+    Regression: the detail panel's helper was written as a getter but carried
+    ``notify()`` calls, so every cursor movement and every table rebuild popped
+    a toast — and a rebuild fires the refresh twice, so each key produced two.
+    """
+
+    async def _press_all(self, keys: str) -> list[str]:
+        """Press a whitespace-separated key sequence, collecting every toast.
+
+        Split on whitespace: iterating the raw string would press each CHARACTER
+        separately, so the spaces between key names would arrive as literal
+        ``space`` presses -- which is a real binding, and produced a baffling
+        failure that looked like an application bug.
+        """
+        seen: list[str] = []
+        real = self.app.notify
+
+        def spy(message: str, *args, **kwargs) -> None:
+            seen.append(message)
+            real(message, *args, **kwargs)
+
+        self.app.notify = spy  # type: ignore[method-assign]
+        for key in keys.split():
+            await self.pilot.press(key)
+            await self.settle()
+        return seen
+
+    async def test_navigating_and_toggling_never_notifies(self) -> None:
+        await self.settle()
+        for name in ("alpha", "beta", "gamma"):
+            self.add_profile(name)
+        self.app._reload_table()
+        await self.settle()
+
+        seen = await self._press_all("down down up o l alt+t h escape t")
+        self.assertEqual(
+            seen, [], f"navigation must be silent, got: {seen}"
+        )
+
+    async def test_an_empty_store_navigating_is_silent(self) -> None:
+        """No rows is the normal transient state during a rebuild, not an error."""
+        await self.settle()
+        seen = await self._press_all("down up o")
+        self.assertEqual(seen, [], f"an empty table must not toast, got: {seen}")
+
+    async def test_a_deliberate_action_on_an_empty_store_still_explains_itself(self) -> None:
+        """Silence is the default, not blanket muting.
+
+        ``t`` with nothing to probe cannot do its job, and saying so is the
+        correct behaviour. What must never happen is the *refresh* path
+        interrupting -- see the other tests here.
+        """
+        await self.settle()
+        seen = await self._press_all("t")
+        self.assertTrue(
+            any("no profiles to test" in message for message in seen),
+            f"t on an empty store must say why, got: {seen}",
+        )
+
+    async def test_a_deliberate_action_still_reports_missing_selection(self) -> None:
+        """Silenced by default, but not silenced everywhere.
+
+        A getter should not interrupt; an action the user chose should still
+        say why it did nothing.
+        """
+        await self.settle()
+        seen = await self._press_all("c")
+        self.assertTrue(
+            any("No profile selected" in message for message in seen),
+            f"pressing c with nothing selected must explain itself, got: {seen}",
+        )
+
+    async def test_the_panel_is_not_the_thing_that_talks(self) -> None:
+        """The refresh path itself must never notify, whatever it finds."""
+        await self.settle()
+        profile = self.add_profile("alpha")
+        self.store.set_latency(profile.id, 42)
+        seen: list[str] = []
+        real = self.app.notify
+        self.app.notify = lambda message, *a, **k: seen.append(message)  # type: ignore[method-assign]
+        try:
+            self.app._refresh_detail()
+            # Even for a selection the store does not know about.
+            self.app._selected_id = lambda: "no-such-profile"  # type: ignore[method-assign]
+            self.app._refresh_detail()
+        finally:
+            self.app.notify = real  # type: ignore[method-assign]
+        self.assertEqual(seen, [], f"_refresh_detail must stay silent, got: {seen}")
