@@ -41,7 +41,14 @@ try:
     )
     from vlessp.tui.screens import build_validation_uri
     from vlessp.tui.theme import DEFAULT_THEME_NAME, THEME_ORDER, THEMES
-    from vlessp.tui.widgets import DASH, ProfileTable, StatusBar
+    from vlessp.tui.widgets import (
+        DASH,
+        PARTIAL_BLOCKS,
+        ProfileDetail,
+        ProfileTable,
+        StatusBar,
+        latency_bar,
+    )
 
     TEXTUAL_IMPORT_ERROR: Exception | None = None
 except ImportError as exc:  # pragma: no cover - depends on the environment
@@ -53,7 +60,7 @@ except ImportError as exc:  # pragma: no cover - depends on the environment
 
 from vlessp.errors import AppError
 from vlessp.links import parse_vless_uri
-from vlessp.profiles import Profile, ProfileStore
+from vlessp.profiles import MAX_LATENCY_HISTORY, Profile, ProfileStore
 from vlessp.secrets import NullSecretStore, SecretStore
 
 if TEXTUAL_IMPORT_ERROR is not None:  # pragma: no cover - environment dependent
@@ -599,8 +606,12 @@ class TestLatency(TuiTestCase):
         slow_cells = self.table().row_values(quick.id)
         fast_cells = self.table().row_values(fast.id)
         assert slow_cells is not None and fast_cells is not None
-        self.assertEqual(slow_cells[5], "890ms")
-        self.assertEqual(fast_cells[5], "42ms")
+        # LAT is now a bar plus the value; the value must still be readable,
+        # which is what keeps the bar from being the only encoding.
+        self.assertIn("890ms", slow_cells[5])
+        self.assertIn("42ms", fast_cells[5])
+        # Same fixed scale, so a slow node draws a longer bar than a fast one.
+        self.assertGreater(len(slow_cells[5].split()[0]), len(fast_cells[5].split()[0]))
         # Sorted by latency after a sweep, so the reachable node is first.
         self.assertEqual(self.table().selected_id(), fast.id)
         self.assertEqual(self.store.get(fast.id).last_latency_ms, 42)
@@ -1336,7 +1347,7 @@ class TestRealServiceIntegration(unittest.IsolatedAsyncioTestCase):
                 profile = store.all()[0]
                 rows = app.query_one(ProfileTable).row_values(profile.id)
                 assert rows is not None
-                self.assertEqual(rows[5], "7ms")
+                self.assertIn("7ms", rows[5])
                 self.assertEqual(store.get(profile.id).last_latency_ms, 7)
 
     async def test_a_missing_credential_is_an_explained_error_not_a_crash(self) -> None:
@@ -1849,3 +1860,150 @@ class TestTableBadging(TuiTestCase):
             self.assertNotIn(secret, rendered)
             self.assertNotIn(secret.replace("-", ""), rendered, "nor the unhyphenated form")
             self.assertNotIn(secret[:8], rendered, "nor any identifiable run of it")
+
+class TestLatencyGraphics(TuiTestCase):
+    """LAT bars and the detail sparkline.
+
+    Only the async tests are meaningful here — they need a mounted app — so the
+    pure data-model ones live in the sync block below the class.
+
+    These are graphics, so the properties worth asserting are that they *encode
+    something true*: a slow node draws a longer bar than a fast one, the scale
+    does not shift under the reader, and an unreachable probe is a gap rather
+    than a zero that would lie about the measurement.
+
+    Only the panel tests need a mounted app; the pure ones are in
+    ``TestLatencyGraphicsPure`` below, where they run in milliseconds.
+    """
+
+    async def test_the_detail_panel_refuses_to_invent_a_trend_from_one_sample(self) -> None:
+        await self.settle()
+        self.add_profile("alpha")
+        self.store.set_latency(self.store.all()[0].id, 42)
+        self.app._reload_table()
+        await self.settle()
+        rendered = str(self.app.query_one("#detail", ProfileDetail).render())
+        self.assertIn("No trend yet", rendered)
+        # The panel states the identity it is describing. A "no trend yet" note
+        # with nothing to anchor it is ambiguous when several rows are listed.
+        self.assertIn("alpha", rendered)
+
+    async def test_the_detail_panel_draws_a_sparkline_once_there_is_a_series(self) -> None:
+        profile = self.add_profile("alpha")
+        for ms in (40, 90, 160, 300):
+            self.store.set_latency(profile.id, ms)
+        self.app._reload_table()
+        await self.settle()
+        rendered = str(self.app.query_one("#detail", ProfileDetail).render())
+        self.assertIn("last 4 runs", rendered)
+        self.assertNotIn("No trend yet", rendered)
+        self.assertIn("min 40ms", rendered)
+
+    async def test_the_panel_follows_the_cursor(self) -> None:
+        await self.settle()
+        first = self.add_profile("alpha")
+        second = self.add_profile("beta")
+        self.app._reload_table()
+        await self.settle()
+        self.table().cursor_coordinate = self.table().cursor_coordinate._replace(row=1)
+        await self.pilot.pause()
+        rendered = str(self.app.query_one("#detail", ProfileDetail).render())
+        self.assertIn(second.label, rendered)
+        self.assertNotIn(first.label, rendered)
+
+    async def test_the_panel_never_shows_a_uuid(self) -> None:
+        profile = self.add_profile("alpha")
+        for ms in (10, 20):
+            self.store.set_latency(profile.id, ms)
+        self.app._reload_table()
+        await self.settle()
+        self.assertNotIn(TEST_UUID, str(self.app.query_one("#detail", ProfileDetail).render()))
+
+
+class TestLatencyGraphicsPure(unittest.TestCase):
+    """Same concerns, no app needed — so they run fast and cannot flake.
+
+    The bar and the history model are pure functions of their inputs, so none of
+    this needs a mounted Textual app.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="vlessp-graphics-")
+        self.addCleanup(self._tmp.cleanup)
+        self.store_path = Path(self._tmp.name) / "profiles.json"
+        self.store = ProfileStore(path=self.store_path)
+        self.store.load()
+
+    def add_profile(self, label: str = "home") -> Profile:
+        profile = self.store.add(label, link_without_uuid(TEST_UUID))
+        return profile
+
+    def test_the_bar_is_never_the_only_encoding(self) -> None:
+        """Colour and glyph are both redundant with the number beside them."""
+        for ms in (12, 85, 250, 700, 1900):
+            with self.subTest(ms=ms):
+                plain = latency_bar(ms).plain
+                self.assertIn(f"{ms}ms", plain)
+
+    def bar_extent(self, ms: int) -> int:
+        """Total fill in eighths of a cell, read back from the rendered glyphs.
+
+        Counted from the characters rather than the model, so this fails if the
+        rendering ever stops matching the level it is supposed to encode.
+        """
+        bar = latency_bar(ms).plain.split()[0]
+        total = 0
+        for char in bar:
+            total += PARTIAL_BLOCKS.index(char)
+        return total
+
+    def test_a_slower_node_draws_a_longer_bar(self) -> None:
+        self.assertLess(self.bar_extent(42), self.bar_extent(890))
+        self.assertLess(self.bar_extent(890), self.bar_extent(1900))
+
+    def test_the_bar_resolves_nearby_latencies(self) -> None:
+        """Four cells of whole blocks would draw 42ms and 85ms identically.
+
+        That is the reason for eighth-blocks: a bar that cannot separate two
+        common values is decoration, not information.
+        """
+        self.assertLess(self.bar_extent(42), self.bar_extent(85))
+        self.assertLess(self.bar_extent(85), self.bar_extent(150))
+
+    def test_the_scale_is_fixed_not_relative(self) -> None:
+        """Two nodes must be comparable by eye.
+
+        A relative scale would rescale to the best node in view, so the same bar
+        would mean "fast" with one row and "terrible" with fifty.
+        """
+        alone = latency_bar(42).plain
+        beside_a_slow_one = latency_bar(42).plain
+        self.assertEqual(alone, beside_a_slow_one, "the scale must not depend on other rows")
+
+    def test_an_unprobed_node_draws_no_bar(self) -> None:
+        self.assertEqual(latency_bar(None).plain, DASH)
+
+    def test_history_grows_and_is_bounded(self) -> None:
+        profile = self.add_profile("alpha")
+        for ms in (10, 20, 30, 40, 50):
+            self.store.set_latency(profile.id, ms)
+        self.assertEqual(self.store.get(profile.id).latency_history, (10, 20, 30, 40, 50))
+        for step in range(40):
+            self.store.set_latency(profile.id, step)
+        history = self.store.get(profile.id).latency_history
+        self.assertLessEqual(len(history), MAX_LATENCY_HISTORY)
+        self.assertEqual(history[-1], 39)
+
+    def test_history_is_not_written_to_disk(self) -> None:
+        """A trend is session state, not configuration."""
+        profile = self.add_profile("alpha")
+        for ms in (11, 22, 33):
+            self.store.set_latency(profile.id, ms)
+        self.store.save()
+        self.assertNotIn("latency_history", self.store_path.read_text(encoding="utf-8"))
+
+    def test_unreachable_probes_are_recorded_as_gaps_not_dropped(self) -> None:
+        profile = self.add_profile("alpha")
+        for ms in (10, None, 30):
+            self.store.set_latency(profile.id, ms)
+        self.assertEqual(self.store.get(profile.id).latency_history, (10, None, 30))

@@ -120,6 +120,47 @@ Refreshing is **non-destructive by design** (decision S5 in `docs/V1/05-v2-parke
 
 Three behaviours worth knowing because they are easy to assume otherwise:
 
+### Latency graphics
+
+The `LAT` column is a bar, not a bare number:
+
+```
+  LABEL      SERVER            PORT  SEC  TRANSPORT  LAT         STATE
+▌tokyo-1     203.0.113.10       443  TLS  ws        ██▍ 42ms    live
+  frankfurt  198.51.100.7      8443  TLS  tcp       ███▋ 890ms   —
+  singapore  203.0.113.44       443  REALITY grpc  █▎   18ms    —
+```
+
+Bars use **eighth-blocks**, not whole blocks. Four cells of `█` give only five distinct values
+across the whole range, which would draw 42 ms and 85 ms identically — decoration, not
+information. Eighth-blocks give thirty-two, enough to separate values you actually care about.
+
+The scale is **fixed, not relative to the best node in view**. A relative scale would rescale
+itself per row, so the same bar would mean "fast" with one node listed and "terrible" with
+fifty. Comparing nodes is the whole reason for a bar, so it has to mean the same thing on every
+row. It is logarithmic because latency is perceived logarithmically — 40 ms to 80 ms matters far
+more than 540 ms to 580 ms.
+
+Beneath the table, a **detail panel** shows the highlighted profile and its trend across recent
+probe runs:
+
+```
+tokyo-1  203.0.113.10:443  [sub:work]
+▄▅▄▅▆▆▇▇▇▇▇ ▇▇█▇▇▇▇▇  last 20 runs this session (1 unreachable)
+min 38ms   avg 454ms   max 800ms
+```
+
+A single cached latency answers "how slow is it now". A trend answers whether the node is
+*degrading*, which is the question that decides whether you go looking for a new subscription.
+
+Two things it will not do. An unreachable probe is a **gap**, not a zero — we did not measure
+zero, we measured nothing, and plotting it at zero would drag the scale to the floor. And with
+only one sample it says so instead of drawing a flat line that looks like a stable measurement.
+
+History is **session-scoped**: the last 20 probes per profile, in memory, discarded on quit.
+`profiles.json` stays a config file and not a metrics log. The number beside each bar is always
+present, so colour and glyph are never the only encoding.
+
 - **`c` and `space` are different on purpose.** `c` acts on the highlighted row; `space` acts on
   the service as a whole. Pressing `c` while scanning the table moves to that row — it never
   silently halts your tunnel.

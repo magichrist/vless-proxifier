@@ -74,6 +74,11 @@ def app_data_dir() -> Path:
 
 DEFAULT_STORE_PATH = app_data_dir() / "profiles.json"
 
+# How many recent probe results a profile remembers. Bounded so a long session
+# cannot grow memory without limit, and small enough that the sparkline stays
+# readable in a narrow panel — a trend you cannot read is a trend you cannot use.
+MAX_LATENCY_HISTORY = 20
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -92,6 +97,11 @@ class Profile:
 
     Both carry defaults so every hand-added profile and every existing store
     written before subscriptions existed keeps working untouched.
+
+    ``latency_history`` is the exception to "everything else round-trips": it is
+    deliberately NOT persisted. It is a session-scoped trend, not configuration,
+    and writing it would turn ``profiles.json`` into a metrics log that grows on
+    every probe. A store read back always starts with an empty history.
     """
 
     id: str
@@ -100,6 +110,7 @@ class Profile:
     last_latency_ms: int | None = None
     source: str = ""
     unavailable: bool = False
+    latency_history: tuple[int | None, ...] = ()
 
 
 def node_identity(link: Mapping[str, Any]) -> tuple[str, str, str, str]:
@@ -459,9 +470,11 @@ class ProfileStore:
             link=new_link,
             last_latency_ms=current.last_latency_ms,
             # Carry provenance and availability: a rename in the TUI must not
-            # quietly turn a subscription node into a hand-added one.
+            # quietly turn a subscription node into a hand-added one. The
+            # latency history rides along too, so an edit does not wipe a trend.
             source=current.source,
             unavailable=current.unavailable,
+            latency_history=current.latency_history,
         )
         self._profiles[profile_id] = updated
         return updated
@@ -608,6 +621,9 @@ class ProfileStore:
                 last_latency_ms=current.last_latency_ms,
                 source=current.source,
                 unavailable=False,
+                # A subscription refresh has nothing to say about latency, so it
+                # must not discard a trend the user just built up.
+                latency_history=current.latency_history,
             )
             next_profiles[current.id] = updated_profile
             if current.unavailable and not (link_changed or uuid_changed):
@@ -627,6 +643,7 @@ class ProfileStore:
                 last_latency_ms=profile.last_latency_ms,
                 source=profile.source,
                 unavailable=True,
+                latency_history=profile.latency_history,
             )
             next_profiles[profile_id] = flagged
             marked.append(flagged)
@@ -683,12 +700,22 @@ class ProfileStore:
         self._active_id = profile_id
 
     def set_latency(self, profile_id: str, latency_ms: int | None) -> Profile:
-        """Update the cached latency for one profile, returning the new Profile."""
+        """Record a probe result for one profile, returning the new Profile.
+
+        Appends to the bounded in-memory history so the UI can show a trend
+        rather than a single number. Unreachable results are recorded as
+        ``None`` rather than skipped: "it stopped responding" is part of the
+        story, and dropping those samples would quietly smooth away exactly the
+        moments worth seeing on a sparkline.
+
+        The history is never written to disk — see :class:`Profile`.
+        """
         current = self.get(profile_id)
         if latency_ms is not None and (
             not isinstance(latency_ms, int) or isinstance(latency_ms, bool) or latency_ms < 0
         ):
             raise AppError("latency must be a non-negative integer or null.")
+        history = (current.latency_history + (latency_ms,))[-MAX_LATENCY_HISTORY:]
         updated = Profile(
             id=current.id,
             label=current.label,
@@ -696,6 +723,7 @@ class ProfileStore:
             last_latency_ms=latency_ms,
             source=current.source,
             unavailable=current.unavailable,
+            latency_history=history,
         )
         self._profiles[profile_id] = updated
         return updated

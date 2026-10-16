@@ -24,13 +24,29 @@ imports; nothing new is added to the dependency set.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from typing import Any
 
 from rich.text import Text
+from textual.coordinate import Coordinate
+from textual.message import Message
 from textual.widgets import DataTable, Static
 
 from vlessp.profiles import SUB_SOURCE_PREFIX, Profile
+
+# Width of the block-character bar in the LAT column. Four keeps the existing
+# seven-column table inside 80 characters, which is the width this thing has to
+# survive; the value sits next to the bar so nothing is bar-only.
+LAT_BAR_WIDTH = 4
+
+# Fixed upper bound for the latency scale. See :func:`latency_bar` — the scale
+# must not be relative, or the same bar would mean different things per row.
+LATENCY_SCALE_MAX = 2000
+
+# How many samples the detail sparkline plots. Matches the history bound so a
+# long session shows everything it kept rather than silently truncating.
+SPARK_WIDTH = 20
 
 # Em-dash placeholder. Design calls for it in LAT ("not probed yet") and STATE
 # ("not the live profile"), so an unprobed row is visually distinct from a probe
@@ -100,6 +116,71 @@ def format_latency(latency_ms: int | None) -> str:
     return DASH if latency_ms is None else f"{latency_ms}ms"
 
 
+#: Sub-cell block characters, lightest to full. Index 0 is blank and index 8
+#: is a full block, so ``PARTIAL_BLOCKS[n]`` fills exactly ``n`` eighths of a
+#: cell. This is what gives the bar resolution: four cells of whole blocks give
+#: only five distinct values across the whole latency range, which is far too
+#: coarse to compare nodes -- 42 ms and 85 ms would draw the same bar. Four
+#: cells of eighth-blocks give thirty-two.
+PARTIAL_BLOCKS = " ▏▎▍▌▋▊▉█"
+
+
+def latency_bar(latency_ms: int | None, *, width: int = LAT_BAR_WIDTH) -> Text:
+    """Render latency as a bar plus its value: ``▊██▌ 142ms``.
+
+    Why a bar and not just the number. A column of ``42ms``/``118ms``/``890ms``
+    makes the reader do the comparison; a bar makes it pre-attentive. The number
+    stays beside it so the bar is never the only encoding — which also keeps
+    this usable where colour is unavailable.
+
+    The scale is **fixed, not relative**. A relative scale would rescale itself
+    to the best and worst node in the list, so the same bar would mean "fast"
+    when one node is in view and "terrible" when fifty are. Comparing nodes is
+    the entire reason to put a bar in a column, so the scale has to mean the
+    same thing on every row.
+
+    It is logarithmic because latency is *perceived* logarithmically: 40 ms to
+    80 ms matters far more than 540 ms to 580 ms, and a linear bar would spend
+    three-quarters of its travel on that uninteresting end.
+    """
+    if latency_ms is None:
+        return Text(DASH, style="dim")
+    level, style = _latency_level(latency_ms)
+    eighths = max(1, min(width * 8, round(level * width * 8)))
+    full, remainder = divmod(eighths, 8)
+
+    bar = Text("█" * full, style=style)
+    if remainder and full < width:
+        bar.append(PARTIAL_BLOCKS[remainder], style=style)
+        bar.append(" " * (width - full - 1))
+    elif full < width:
+        bar.append(" " * (width - full))
+    bar.append(f" {latency_ms}ms")
+    return bar
+
+
+def _latency_level(latency_ms: int) -> tuple[float, str]:
+    """Map a latency onto 0.0-1.0 and a colour, using the fixed thresholds above.
+
+    The curve is logarithmic rather than linear because latency is perceived
+    logarithmically — the difference between 40 ms and 80 ms matters far more
+    than the difference between 540 ms and 580 ms, and a linear bar would spend
+    three-quarters of its travel on that uninteresting end.
+    """
+    upper = LATENCY_SCALE_MAX
+    clamped = max(1, min(latency_ms, upper))
+    level = math.log10(clamped + 1) / math.log10(upper + 1)
+    if latency_ms <= 50:
+        return level, "bold green"
+    if latency_ms <= 150:
+        return level, "green"
+    if latency_ms <= 300:
+        return level, "yellow"
+    if latency_ms <= 600:
+        return level, "dark_orange3"
+    return level, "bold red"
+
+
 def format_source(source: str) -> str:
     """The ``[sub:<name>]`` badge for a profile's source; ``""`` when hand-added.
 
@@ -140,6 +221,27 @@ def order_profiles(profiles: Iterable[Profile], *, by_latency: bool) -> list[Pro
 
 
 class ProfileTable(DataTable):
+    """The profile list.
+
+    Posts :class:`Highlighted` whenever the cursor moves. ``DataTable`` has a
+    ``RowHighlighted`` message, but it fires only when ``cursor_type`` is
+    ``"row"`` — and this table uses the default ``"cell"``, so subscribing to it
+    would silently never fire. Watching ``cursor_coordinate`` covers every cursor
+    type instead of depending on one.
+    """
+
+    class Highlighted(Message):
+        """The cursor moved to another profile."""
+
+        def __init__(self, table: ProfileTable) -> None:
+            super().__init__()
+            self.table = table
+
+    def watch_cursor_coordinate(
+        self, old: Coordinate, new: Coordinate
+    ) -> None:
+        self.post_message(self.Highlighted(self))
+        super().watch_cursor_coordinate(old, new)
     """The profile list.
 
     Rows are keyed by profile id, so :meth:`selected_id` can hand the app a
@@ -209,11 +311,23 @@ class ProfileTable(DataTable):
                 Text(str(link.get("port", "")), style=style),
                 Text(str(link.get("security", "")), style=style),
                 Text(str(link.get("network", "")), style=style),
-                Text(format_latency(profile.last_latency_ms), style=style),
+                self._latency_cell(profile, style),
                 Text(self._state_cell(profile), style=style),
                 key=profile.id,
             )
         self._restore_cursor(previous_row)
+
+    def _latency_cell(self, profile: Profile, style: str = "") -> Text:
+        """LAT cell: a block bar plus the value, dimmed when the row is unavailable.
+
+        The bar is built first and the dim style applied over the whole cell, so
+        an unavailable node reads as de-emphasised without losing its latency —
+        the number is still useful, it just should not draw the eye.
+        """
+        bar = latency_bar(profile.last_latency_ms)
+        if style:
+            bar.stylize(style)
+        return bar
 
     def _restore_cursor(self, previous_row: int) -> None:
         """Re-place the cursor after a rebuild, clamped into the new row range."""
@@ -326,16 +440,132 @@ class StatusBar(Static):
         self.set_class(not running, "stopped")
 
 
+class ProfileDetail(Static):
+    """Sparkline and stats for one profile: the answer to "is it getting worse?".
+
+    A single cached latency answers "how slow is it right now" and nothing else.
+    Two runs of ``t`` five minutes apart, side by side, answer a different
+    question — whether the node is degrading, which is the one that decides
+    whether you go looking for a new subscription. That needs a series, so this
+    renders ``Profile.latency_history``.
+
+    The history is session-scoped (see :class:`Profile`), so the panel says so
+    rather than implying a trend record longer than it has.
+
+    Unreachable probes are drawn as gaps, not as zero. A zero would drag the
+    scale to the floor and make every real latency look like a spike, and it
+    would also be a lie: we did not measure zero, we measured nothing.
+    """
+
+    DEFAULT_CSS = """
+    ProfileDetail {
+        height: auto;
+        padding: 0 1;
+    }
+    ProfileDetail .spark {
+        height: 1;
+    }
+    ProfileDetail .empty {
+        color: $text-muted;
+    }
+    """
+
+    #: Braille heights, lightest first. Braille gives 8 vertical steps per cell
+    #: where block characters give 8 across the full cell, so a trend over 20
+    #: probes stays readable in one line without stealing table rows.
+    SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+    def show_profile(self, profile: Profile | None) -> None:
+        """Render ``profile``, or a hint when nothing is selected."""
+        if profile is None:
+            self.update(Text("No profile selected.", classes="empty"))
+            return
+        # Named _build, not _render: Static already has an internal _render with
+        # a different signature, and shadowing it breaks the widget.
+        self.update(self._build(profile))
+
+    def _build(self, profile: Profile) -> Text:
+        link = profile.link
+        out = Text()
+        out.append(f"{profile.label}", style="bold")
+        host = f"{link.get('server', '?')}:{link.get('port', '?')}"
+        out.append(f"  {host}", style="dim")
+        if profile.source:
+            out.append(f"  {format_source(profile.source)}", style="dim")
+        if profile.unavailable:
+            out.append("  gone", style="yellow")
+
+        history = profile.latency_history
+        out.append("\n")
+        if len(history) < 2:
+            # One sample has no shape. Saying so is more honest than drawing a
+            # flat line that looks like a stable measurement.
+            out.append(
+                "No trend yet — press t twice to compare runs.",
+                style="dim",
+            )
+            return out
+
+        spark, gaps = _sparkline(history, width=SPARK_WIDTH)
+        out.append(spark)
+        out.append(f"  last {len(history)} runs this session", style="dim")
+        if gaps:
+            out.append(f" ({gaps} unreachable)", style="yellow")
+
+        measured = [ms for ms in history if ms is not None]
+        if measured:
+            out.append(
+                f"\nmin {min(measured)}ms   avg {round(sum(measured) / len(measured))}ms"
+                f"   max {max(measured)}ms",
+                style="dim",
+            )
+        return out
+
+
+def _sparkline(history: Sequence[int | None], *, width: int) -> tuple[Text, int]:
+    """Draw ``history`` as a bar chart. Returns the cell and the gap count.
+
+    Gaps — an unreachable probe — are left blank rather than plotted at zero, and
+    the caller reports how many there were so the blank is never mistaken for
+    missing data.
+
+    The scale is again fixed (:data:`LATENCY_SCALE_MAX`), so two profiles'
+    trends are visually comparable rather than each flattering itself.
+    """
+    samples = list(history[-width:])
+    measured = [ms for ms in samples if ms is not None]
+    out = Text()
+    if not measured:
+        return Text("·" * len(samples), style="dim"), 0
+
+    ceiling = max(LATENCY_SCALE_MAX, max(measured))
+    gaps = 0
+    for ms in samples:
+        if ms is None:
+            out.append(" ")
+            gaps += 1
+            continue
+        ratio = min(1.0, max(0.0, math.log10(ms + 1) / math.log10(ceiling + 1)))
+        index = min(len(ProfileDetail.SPARK_CHARS) - 1, int(ratio * len(ProfileDetail.SPARK_CHARS)))
+        _, style = _latency_level(ms)
+        out.append(ProfileDetail.SPARK_CHARS[index], style=style)
+    return out, gaps
+
+
 __all__ = [
     "ACTIVE_MARK",
     "DASH",
+    "LATENCY_SCALE_MAX",
+    "LAT_BAR_WIDTH",
     "LIVE_MARK",
     "SOURCE_NAME_MAX",
     "UNAVAILABLE_MARK",
     "UNAVAILABLE_STYLE",
+    "ProfileDetail",
     "ProfileTable",
     "StatusBar",
     "format_latency",
     "format_source",
+    "latency_bar",
     "order_profiles",
 ]

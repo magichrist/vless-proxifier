@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rich.text import Text
-from textual import work
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Static
@@ -56,7 +56,7 @@ from vlessp.tui.screens import (
     HelpScreen,
 )
 from vlessp.tui.theme import apply_theme, next_theme, register_all
-from vlessp.tui.widgets import ProfileTable, StatusBar
+from vlessp.tui.widgets import ProfileDetail, ProfileTable, StatusBar
 
 if TYPE_CHECKING:
     from vlessp.profiles import Profile
@@ -238,6 +238,10 @@ class VlessApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield ProfileTable(id="profiles")
+        # The detail panel sits between the table and the log: the log is a
+        # diagnostic surface that is hidden by default, so this is the only
+        # always-visible readout below the table.
+        yield ProfileDetail(id="detail")
         yield Static("", id="log-pane")
         yield Footer()
         yield StatusBar(id="status")
@@ -254,6 +258,38 @@ class VlessApp(App[None]):
         # A cheap in-memory status tick. The log refresh below it is a worker
         # because ``log_tail()`` may read a file written by the Xray process.
         self.set_interval(LOG_REFRESH_SECONDS, self._tick)
+
+    # -- detail panel -----------------------------------------------------
+
+    def _refresh_detail(self) -> None:
+        """Re-render the detail panel for whatever row the cursor is on.
+
+        Best-effort by design: this runs on cursor movement, and a panel that
+        fails to refresh must never take the table navigation down with it.
+        """
+        try:
+            self.query_one("#detail", ProfileDetail).show_profile(self._selected_profile())
+        except Exception:
+            pass
+
+    def _selected_profile(self) -> Profile | None:
+        profile_id = self._selected_id()
+        if profile_id is None:
+            return None
+        try:
+            return self._store.get(profile_id)
+        except AppError:
+            return None
+
+    @on(ProfileTable.Highlighted)
+    def _row_highlighted(self) -> None:
+        """Keep the detail panel in step with the cursor.
+
+        Fires on cursor movement as well as after a reload, so this is the one
+        place that has to know the panel exists — every path that changes the
+        table ends up triggering it.
+        """
+        self._refresh_detail()
 
     # -- key guards ------------------------------------------------------
 
@@ -692,6 +728,10 @@ class VlessApp(App[None]):
             sort_by_latency=sort_by_latency,
         )
         self._refresh_status()
+        # A reload can move the cursor onto a different profile, so the panel is
+        # refreshed here too. Row-highlight alone is not enough: after a sort the
+        # same row index can hold entirely different content.
+        self._refresh_detail()
 
     def _refresh_status(self) -> None:
         """Update the header and status bar. Reads only in-memory service state."""
