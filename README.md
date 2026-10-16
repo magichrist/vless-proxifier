@@ -78,21 +78,30 @@ keeps working. Both are aliases and are not advertised in the key hints — `h` 
 
 ### The key hints
 
-Every key is listed under the table, permanently visible:
+One line, under the table, every key:
 
 ```
-connect    c  connect  ·  space  stop/resume  ·  t  test
-profiles   l  add link  ·  s  add sub  ·  e  edit  ·  i  ip/port
-more       d  delete  ·  o  output  ·  alt+t  theme  ·  h  help  ·  q  quit
+c connect · space stop/resume · t test · l add link · s add sub · e edit · i ip/port · d delete · o output · alt+t theme · h help · q quit
 ```
 
-This replaces Textual's built-in `Footer`, which was the wrong tool here. The footer renders one
-key/label pair per binding on a single un-wrapped line: twelve bindings came to **117 columns**,
-so on an 80-column terminal the tail was silently cut to an ellipsis — hiding `q`, the last key
-anyone wants hidden. It looked complete while lying about what was available.
+It replaces Textual's built-in `Footer`, which was the wrong tool: the footer renders one
+key/label pair per binding on a single un-wrapped line, and twelve bindings came to **117
+columns**, so on an 80-column terminal the tail was silently cut to an ellipsis — hiding `q`, the
+last key anyone wants hidden. It looked complete while lying about what was available.
 
-The hints are laid out to fit 80 columns, and a test measures every line against that width so
-the truncation bug cannot come back quietly.
+Twelve readable keys need 138 columns, so rather than pick one compromised layout the line
+**adapts to the terminal**, taking the widest tier that fits:
+
+| Width | Rendered |
+|---|---|
+| ≥138 | `c connect · space stop/resume · t test · l add link · …` |
+| ≥128 | `c conn · space stop · t test · l add link · …` |
+| ≥80 | `c:conn sp:stop t:test l:add s:sub e:edit i:ip d:del o:out ^T:theme h:help q:quit` |
+| <80 | `c space t l s e i d o alt+t h q` (keys only) |
+
+Below 80 it drops the *labels* rather than truncating: a key with no description is still
+pressable and still honest, whereas a cut-off line silently hides keys nobody can find. A test
+sweeps every width from 33 to 160 and asserts the rendered line always fits.
 
 ### Themes
 

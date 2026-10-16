@@ -2103,59 +2103,83 @@ class TestNoSpuriousToasts(TuiTestCase):
 
 
 class TestKeyHints(TuiTestCase):
-    """The always-visible key list.
+    """The one-line key list.
 
     This widget exists because Textual's ``Footer`` cannot be used here: twelve
     bindings on one un-wrapped line came to 117 columns, so it silently
-    truncated to an ellipsis on an 80-column terminal — hiding ``q``, the last
-    key anyone wants hidden. These tests are the regression guard for that.
+    truncated to an ellipsis on an 80-column terminal -- hiding ``q``, the last
+    key anyone wants hidden. These tests are the regression guard for that, and
+    they are written against the *rendered* strings rather than the layout
+    tables, because getting a width wrong is the exact bug being guarded.
     """
 
-    def test_every_line_fits_the_terminal(self) -> None:
-        """The whole point. If this fails, keys go missing again."""
-        hints = KeyHints()
-        lines = hints.compose_hint().plain.split("\n")
-        for line in lines:
-            with self.subTest(line=line):
+    def test_it_is_a_single_line(self) -> None:
+        """Not a block. Chrome must not steal rows from the table."""
+        for width in (300, 140, 130, 100, 80, 60):
+            with self.subTest(width=width):
+                line = KeyHints().compose_hint(width).plain
+                self.assertNotIn("\n", line, "the hints must be one line")
+
+    def test_every_tier_fits_the_width_that_selects_it(self) -> None:
+        for tier, minimum in enumerate(KeyHints.MINIMUMS):
+            with self.subTest(tier=tier):
+                line = KeyHints().render_tier(tier).plain
                 self.assertLessEqual(
-                    len(line), KeyHints.MAX_WIDTH,
-                    f"{len(line)} columns: {line!r}",
+                    len(line), minimum,
+                    f"tier {tier} needs {len(line)} but claims {minimum}",
                 )
 
-    def test_no_line_is_empty(self) -> None:
-        for line in KeyHints().compose_hint().plain.split("\n"):
-            self.assertTrue(line.strip())
+    def test_no_width_ever_truncates(self) -> None:
+        """Sweep every width; the rendered line must always fit inside it."""
+        hints = KeyHints()
+        for width in range(33, 160):
+            with self.subTest(width=width):
+                line = hints.compose_hint(width).plain
+                self.assertLessEqual(
+                    len(line), width, f"{len(line)} cols into {width}"
+                )
 
-    def test_every_visible_binding_is_advertised(self) -> None:
-        """A key that exists but is unlisted is a key nobody will find."""
+    def test_the_widest_tier_is_chosen_when_there_is_room(self) -> None:
+        """A 200-column terminal should get the readable layout, not the cramped one."""
+        self.assertEqual(KeyHints().tier_for(200), 0)
+        self.assertIn("stop/resume", KeyHints().compose_hint(200).plain)
+
+    def test_every_bound_key_appears_in_every_tier(self) -> None:
+        """Compression may shorten a label; it may never drop a key."""
         bound = {
-            binding.key
-            for binding in VlessApp.BINDINGS
-            if binding.show and not binding.key.startswith("^")
+            b.key
+            for b in VlessApp.BINDINGS
+            if b.show and not b.key.startswith("^")
         }
-        advertised = {
-            key
-            for _label, entries in KeyHints.GROUPS
-            for key, _description in entries
-        }
-        self.assertEqual(
-            bound - advertised, set(), "bindings missing from the key hints"
-        )
-        self.assertEqual(
-            advertised - bound, set(), "hints for keys that are not bound"
-        )
+        for tier in range(len(KeyHints.TIERS)):
+            with self.subTest(tier=tier):
+                shown = KeyHints().render_tier(tier).plain.split()
+                # "space" abbreviates to "sp" and "alt+t" to "^T" in the narrow
+                # tier only, and that tier joins with ':' -- so the token there
+                # is "sp:stop", not "sp". Accept any known spelling of the key.
+                spellings = {"space": ("space", "sp"), "alt+t": ("alt+t", "^T")}
+                for key in bound:
+                    accepted = spellings.get(key, (key,))
+                    self.assertTrue(
+                        any(
+                            token == want or token.startswith(f"{want}:")
+                            for token in shown
+                            for want in accepted
+                        ),
+                        f"tier {tier} hides {key}; shows {shown}",
+                    )
 
-    async def test_quit_is_always_visible(self) -> None:
-        """The key that must never be the one that gets truncated."""
-        rendered = KeyHints().compose_hint().plain
-        self.assertIn("q", rendered)
-        self.assertIn("quit", rendered)
-
-    async def test_the_hints_sit_under_the_table(self) -> None:
+    async def test_the_hints_render_under_the_table(self) -> None:
         await self.settle()
         self.add_profile("alpha")
         self.app._reload_table()
         await self.settle()
-        self.assertIsInstance(self.app.query_one(KeyHints), KeyHints)
-        # And it has actually rendered, rather than sitting there empty.
-        self.assertTrue(str(self.app.query_one(KeyHints).render()).strip())
+        rendered = str(self.app.query_one(KeyHints).render()).strip()
+        self.assertTrue(rendered, "the hint bar must not sit there empty")
+
+    async def test_quit_is_visible_at_the_size_it_renders(self) -> None:
+        """The key that must never be the one that gets truncated."""
+        await self.settle()
+        for width in (200, 140, 130, 100, 80, 60):
+            with self.subTest(width=width):
+                self.assertIn("q", KeyHints().compose_hint(width).plain)
