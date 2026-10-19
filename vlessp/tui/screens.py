@@ -222,7 +222,8 @@ class ConfirmScreen(ModalScreen[bool]):
         align: center middle;
     }
     ConfirmScreen > VerticalScroll {
-        width: 56;
+        width: 90%;
+        max-width: 56;
         height: auto;
         max-height: 80%;
         padding: 1 2;
@@ -296,7 +297,8 @@ class AddProfileScreen(ModalScreen[Profile | None]):
         align: center middle;
     }
     AddProfileScreen > VerticalScroll {
-        width: 76;
+        width: 90%;
+        max-width: 76;
         height: auto;
         max-height: 90%;
         padding: 1 2;
@@ -347,6 +349,11 @@ class AddProfileScreen(ModalScreen[Profile | None]):
 
     def on_mount(self) -> None:
         self.query_one("#label", Input).focus()
+        # The preview frame stays hidden until there is something to preview.
+        # Shown from compose it was an empty accent-bordered box on open, which
+        # reads as a broken field rather than "fill the form and I will show you
+        # what I parsed".
+        self.query_one("#preview", Static).display = False
 
     # -- input handling -------------------------------------------------
 
@@ -399,7 +406,9 @@ class AddProfileScreen(ModalScreen[Profile | None]):
             # The fragment is the best label the provider gave us; the user can
             # still overwrite it before committing.
             label_input.value = str(parsed.get("name") or parsed.get("server") or "")
-        self.query_one("#preview", Static).update(summary_lines(parsed))
+        preview = self.query_one("#preview", Static)
+        preview.display = True
+        preview.update(summary_lines(parsed))
         self.query_one("#confirm", Button).label = "Save"
 
     def _show_error(self, message: str) -> None:
@@ -493,7 +502,8 @@ class EditProfileScreen(ModalScreen[Profile | None]):
         align: center middle;
     }
     EditProfileScreen > VerticalScroll {
-        width: 76;
+        width: 90%;
+        max-width: 76;
         height: auto;
         max-height: 90%;
         padding: 1 2;
@@ -761,7 +771,8 @@ class AddressScreen(ModalScreen[Profile | None]):
         align: center middle;
     }
     AddressScreen > VerticalScroll {
-        width: 64;
+        width: 90%;
+        max-width: 64;
         height: auto;
         padding: 1 2;
         background: $surface;
@@ -774,6 +785,10 @@ class AddressScreen(ModalScreen[Profile | None]):
     AddressScreen .current {
         height: auto;
         margin-bottom: 1;
+        color: $text-muted;
+    }
+    AddressScreen Label {
+        height: auto;
         color: $text-muted;
     }
     AddressScreen Input {
@@ -807,7 +822,12 @@ class AddressScreen(ModalScreen[Profile | None]):
                 Text(f"currently {self._profile.link.get('server', '?')}:{self._profile.link.get('port', '?')}"),
                 classes="current",
             )
+            # Explicit labels, not placeholders: a placeholder disappears the
+            # moment the field has a value, leaving two identical boxes whose
+            # meaning the user has to remember.
+            yield Label("Server")
             yield Input(value=str(self._profile.link.get("server") or ""), placeholder="host or IP", id="server")
+            yield Label("Port")
             yield Input(
                 value=str(self._profile.link.get("port") or ""),
                 placeholder="port",
@@ -915,7 +935,8 @@ class HelpScreen(ModalScreen[None]):
         align: center middle;
     }
     HelpScreen > VerticalScroll {
-        width: 76;
+        width: 90%;
+        max-width: 76;
         height: auto;
         max-height: 85%;
         padding: 1 2;
@@ -1022,7 +1043,8 @@ class AddSubscriptionScreen(ModalScreen[str | None]):
         align: center middle;
     }
     AddSubscriptionScreen > VerticalScroll {
-        width: 64;
+        width: 90%;
+        max-width: 64;
         height: auto;
         padding: 1 2;
         background: $surface;
