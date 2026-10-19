@@ -12,12 +12,11 @@ change.
 
 Switching is additive, not a replacement
 ----------------------------------------
-``THEME_ORDER`` deliberately starts with Textual's built-in ``textual-dark``,
-which is what this app already looked like before themes existed. A user who
-never presses the cycling key sees precisely the pre-existing interface. The
-alternative — making one of the new themes the default — would silently
-restyle an application that was working fine, which is the kind of change that
-gets discovered as a bug report rather than as a feature.
+``THEME_ORDER`` starts with the designed ``cyber-female`` palette, which is also
+the default, and keeps Textual's built-in ``textual-dark`` in the cycle rather
+than deleting it. So the app's first look is something chosen for it, the
+built-in remains one or two keypresses away and unmodified, and pressing the
+cycling key always moves to a genuinely different look.
 
 Contrast is a hard requirement, not a finishing touch
 ----------------------------------------------------
@@ -59,6 +58,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from textual.theme import Theme
+
+from vlessp.tui.graphics import palette_mode
 
 if TYPE_CHECKING:
     from textual.app import App
@@ -133,71 +134,119 @@ def _contrast(hex_a: str, hex_b: str) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
-# -- themes -----------------------------------------------------------------
+# -- palettes ---------------------------------------------------------------
 #
-# gummy — "candy-bright on cream".
+# Two variants per theme, chosen once at import time:
 #
-# Five of the six accents were deepened from the original brief. Each was moved
-# down its own HSL lightness axis with hue and saturation held constant, to the
-# brightest value still clearing 5.0:1 on the cream ground. Hue preservation is
-# the point: #517516 is still the same lime as #8AC926, just legible. Measured
-# against #FFF6E9, before -> after:
+# ``truecolor``  the palette as designed, with the exact hex values the
+#                contrast matrix below was measured against.
+# ``256``        the same design snapped to the xterm-256 *cube* (channel
+#                values 00/5f/87/af/d7/ff) or grey ramp. Every value here is
+#                already a palette entry, so the renderer's downgrade is a
+#                no-op instead of a lossy nearest-neighbour guess. That is what
+#                makes the theme keep its hue on macOS Terminal.app, which does
+#                not advertise 24-bit colour.
 #
-#     primary    #FF5FA2 -> #D30059   2.65 -> 5.01   (bubblegum -> deep raspberry)
-#     secondary  #FF8A3D -> #B64800   2.19 -> 5.01   (tangerine -> burnt orange)
-#     accent     #8AC926 -> #517516   1.87 -> 5.02   (lime -> olive lime)
-#     success    #3FA34D -> #2F7939   2.99 -> 5.01   (green -> forest)
-#     warning    #E8A200 -> #8D6300   2.04 -> 5.01   (amber -> dark honey)
-#
-# error was left at #D62839 (4.65) because it was the only accent that already
-# cleared the bar, and the ground colours were left alone: foreground #3B2C3A
-# sits at 12.20 on the background, so the cream palette is not what is failing.
-#
-# The unavoidable cost is that "candy-bright" has to live in the borders,
-# fills, and Textual's own derived tints rather than in the text colours. A
-# pastel accent on a near-white ground cannot be readable at any size; the
-# saturated reading of this theme is carried by the palette itself.
-GUMMY = Theme(
-    name="gummy",
-    primary="#D30059",
-    secondary="#B64800",
-    warning="#8D6300",
-    error="#D62839",
-    success="#2F7939",
-    accent="#517516",
-    foreground="#3B2C3A",
-    background="#FFF6E9",
-    surface="#FFFDF7",
-    panel="#FFE9C7",
-    # Dark wash, matching what Textual itself would derive for a light theme.
-    # Currently inert for the reason given above BASE_COLOURS.
-    boost="#140B05",
+# The 256 variants are not just quantised versions of the truecolor values.
+# Each accent was re-picked from the cube so it still clears 4.5:1 on the same
+# ground; a naive snap of, say, the olive accent lands under the bar. The
+# contrast matrix in ``tests/test_theme.py`` walks whichever variant is active,
+# so both are held to the same standard.
+GUMMY_TRUECOLOR: dict[str, str] = {
+    "primary": "#D30059",
+    "secondary": "#B64800",
+    "warning": "#8D6300",
+    "error": "#D62839",
+    "success": "#2F7939",
+    "accent": "#517516",
+    "foreground": "#3B2C3A",
+    "background": "#FFF6E9",
+    "surface": "#FFFDF7",
+    "panel": "#FFE9C7",
+    "boost": "#140B05",
+}
+
+GUMMY_256: dict[str, str] = {
+    # Deep raspberry / burnt orange / honey, all cube entries. The state colours
+    # are a step darker than their truecolour cousins because they are also
+    # painted on the pink panel (the table header and status strip), not only on
+    # the cream ground; a green that clears 4.5:1 on cream can still fail on the
+    # lighter pink. These clear both.
+    "primary": "#D7005F",
+    "secondary": "#AF5F00",
+    "warning": "#5F5F00",
+    "error": "#AF0000",
+    "success": "#005F00",
+    "accent": "#005F5F",
+    # Cool-neutral ink on a cube cream ground, with white cards and a candy
+    # pink panel so the surfaces stay distinguishable after quantisation.
+    "foreground": "#3A3A3A",
+    "background": "#FFFFD7",
+    "surface": "#FFFFFF",
+    "panel": "#FFD7D7",
+    # Inert today, but it still has to be a real 256 entry: the whole point of
+    # this variant is that no value relies on the renderer's nearest-neighbour
+    # guess, and an off-palette value here would be the one exception.
+    "boost": "#080808",
+}
+
+CYBER_FEMALE_TRUECOLOR: dict[str, str] = {
+    "primary": "#FF2E9A",
+    "secondary": "#22E0F0",
+    "warning": "#FFC53D",
+    "error": "#FF4D6D",
+    "success": "#3DFFC0",
+    "accent": "#B14BFF",
+    "foreground": "#F0E6FF",
+    "background": "#0B0A14",
+    "surface": "#16122A",
+    "panel": "#1E1840",
+    "boost": "#2A2158",
+}
+
+CYBER_FEMALE_256: dict[str, str] = {
+    # Neon magenta, cyan and violet, each an exact cube entry. The grey-ramp
+    # ground keeps the neon reading as neon; a cube black would band badly on
+    # Terminal.app's default profile.
+    "primary": "#FF5FAF",
+    "secondary": "#5FD7FF",
+    "warning": "#FFD75F",
+    "error": "#FF5F5F",
+    "success": "#5FFF87",
+    "accent": "#AF87FF",
+    "foreground": "#EEEEEE",
+    "background": "#121212",
+    "surface": "#1C1C1C",
+    "panel": "#262626",
+    "boost": "#303030",
+}
+
+#: Which family was selected. Exported so the app can say so in the log pane
+#: once, instead of the user wondering why the colours differ between machines.
+PALETTE_MODE: str = palette_mode()
+
+
+def _theme(name: str, palette: dict[str, str], *, dark: bool) -> Theme:
+    """Build a Textual ``Theme`` from a palette dict.
+
+    Only the eleven base colours are supplied; Textual derives the rest. See the
+    note above ``BASE_COLOURS`` for why ``boost`` is stored but currently inert.
+    """
+    return Theme(name=name, dark=dark, **palette)
+
+
+GUMMY = _theme(
+    "gummy",
+    GUMMY_TRUECOLOR if PALETTE_MODE == "truecolor" else GUMMY_256,
     dark=False,
 )
 
-# cyber-female — "neon magenta + cyan on dark".
-#
-# Unchanged from the brief: every pair already cleared 4.5:1 on the indigo-black
-# ground with room to spare, so the palette that ships here is the palette that
-# was designed. Margins are 4.98 (accent) at the tightest, which is above the
-# bar but is the value to watch if this palette is ever revisited.
-CYBER_FEMALE = Theme(
-    name="cyber-female",
-    primary="#FF2E9A",
-    secondary="#22E0F0",
-    warning="#FFC53D",
-    error="#FF4D6D",
-    success="#3DFFC0",
-    accent="#B14BFF",
-    foreground="#F0E6FF",
-    background="#0B0A14",
-    surface="#16122A",
-    panel="#1E1840",
-    # Light wash, matching Textual's convention for a dark theme. Currently
-    # inert for the reason given above BASE_COLOURS.
-    boost="#2A2158",
+CYBER_FEMALE = _theme(
+    "cyber-female",
+    CYBER_FEMALE_TRUECOLOR if PALETTE_MODE == "truecolor" else CYBER_FEMALE_256,
     dark=True,
 )
+
 
 #: Every theme this module defines, keyed by the name Textual knows it by.
 #:
@@ -212,14 +261,21 @@ THEMES: dict[str, Theme] = {
 
 #: Cycle order for the theme key binding.
 #:
-#: Built-in first, so the first press moves *away* from the look the user
-#: already had and a user who presses it once still knows what they changed.
-THEME_ORDER: tuple[str, ...] = ("textual-dark", "gummy", "cyber-female")
+#: The designed theme first, because that is the one the app starts on -- a
+#: cycle whose first entry is not the current theme makes every count of
+#: keypresses off by one. The built-in stays in the cycle so a user who wants
+#: Textual's neutral look, or who is debugging a palette, can still reach it.
+THEME_ORDER: tuple[str, ...] = ("cyber-female", "gummy", "textual-dark")
 
 #: The theme a fresh install starts on, and the fallback whenever a requested
-#: name cannot be applied. A built-in, so it is registered on every ``App``
-#: before any of this code runs and therefore always recoverable.
-DEFAULT_THEME_NAME: str = "textual-dark"
+#: name cannot be applied.
+#:
+#: This used to be Textual's ``textual-dark``, on the principle that a new
+#: feature must not silently restyle an existing interface. The built-in is
+#: still reachable and unmodified, but it is no longer the first look: it is a
+#: neutral utility theme that was never chosen for this app, and on a
+#: 256-colour terminal its greys quantise into something flatter still.
+DEFAULT_THEME_NAME: str = "cyber-female"
 
 
 def next_theme(current: str) -> str:
@@ -295,8 +351,13 @@ __all__ = [
     "AA_TEXT_CONTRAST",
     "BASE_COLOURS",
     "CYBER_FEMALE",
+    "CYBER_FEMALE_256",
+    "CYBER_FEMALE_TRUECOLOR",
     "DEFAULT_THEME_NAME",
     "GUMMY",
+    "GUMMY_256",
+    "GUMMY_TRUECOLOR",
+    "PALETTE_MODE",
     "THEMES",
     "THEME_ORDER",
     "apply_theme",

@@ -227,9 +227,15 @@ class TestRegistry(unittest.TestCase):
     def test_the_cycle_has_exactly_three_entries(self) -> None:
         self.assertEqual(len(THEME_ORDER), 3)
 
-    def test_the_cycle_starts_on_the_built_in_theme(self) -> None:
-        """Switching is additive only if the existing look is reachable first."""
-        self.assertEqual(THEME_ORDER[0], "textual-dark")
+    def test_the_cycle_starts_on_the_theme_that_is_already_in_force(self) -> None:
+        """The cycle is anchored to the default, not to the built-in.
+
+        A cycle whose first entry is not the theme currently applied makes every
+        count of keypresses off by one. The built-in still has to be reachable,
+        which is what the second assertion is for.
+        """
+        self.assertEqual(THEME_ORDER[0], DEFAULT_THEME_NAME)
+        self.assertIn("textual-dark", THEME_ORDER, "the built-in must remain reachable")
 
     def test_the_cycle_order_is_a_permutation_without_repeats(self) -> None:
         self.assertEqual(len(set(THEME_ORDER)), len(THEME_ORDER), "a repeated name would make the cycle stutter")

@@ -39,12 +39,14 @@ try:
         HelpScreen,
         VlessApp,
     )
+    from vlessp.tui.graphics import rgb
     from vlessp.tui.screens import build_validation_uri
     from vlessp.tui.theme import DEFAULT_THEME_NAME, THEME_ORDER, THEMES
     from vlessp.tui.widgets import (
         DASH,
         DETAIL_HEIGHT,
         PARTIAL_BLOCKS,
+        AppHeader,
         KeyHints,
         ProfileDetail,
         ProfileTable,
@@ -428,6 +430,152 @@ class TestTableSizing(TuiTestCase):
         the panel or leave a blank row — so it is asserted here instead.
         """
         self.assertIn(f"height: {DETAIL_HEIGHT};", ProfileDetail.DEFAULT_CSS)
+
+
+class TestChrome(TuiTestCase):
+    """The header strip, the framed panels, and the busy animation.
+
+    These assert *state wiring*, not pixels. The gradient and the borders are
+    Textual's and Rich's job; what would be this module's bug is a header that
+    says RUNNING while the service is stopped, a spinner that keeps ticking
+    after the work finishes, or a frame title that was never set because the
+    title lives on the widget and only its colour lives in CSS.
+    """
+
+    async def test_the_header_reports_the_count_and_the_state(self) -> None:
+        self.add_profile("alpha")
+        self.add_profile("beta")
+        self.app._reload_table()
+        await self.settle()
+
+        header = str(self.app.query_one(AppHeader).render())
+        self.assertIn("VLESS", header)
+        self.assertIn("2 profiles", header)
+        # The stub service is not running, so the strip must not claim it is.
+        self.assertIn("STOPPED", header)
+        self.assertNotIn("RUNNING", header)
+
+    async def test_the_header_switches_to_the_busy_state(self) -> None:
+        await self.settle()
+        self.app._switching = True
+        self.app._refresh_status()
+        await self.pilot.pause()
+
+        header = str(self.app.query_one(AppHeader).render())
+        self.assertIn("SWITCHING", header)
+        self.assertNotIn("STOPPED", header)
+
+        self.app._switching = False
+        self.app._refresh_status()
+        await self.pilot.pause()
+        self.assertIn("STOPPED", str(self.app.query_one(AppHeader).render()))
+
+    async def test_a_probe_sweep_draws_a_meter_and_stops_animating(self) -> None:
+        self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        self.app._probe_active = True
+        self.app._probe_total = 4
+        self.app._probe_done = 1
+        self.app._refresh_status()
+        await self.pilot.pause()
+
+        rendered = str(self.app.query_one(StatusBar).render())
+        self.assertIn("TESTING", rendered)
+        self.assertIn("1/4", rendered)
+        # The meter is 8 cells; one quarter done is two filled cells.
+        self.assertEqual(rendered.count("█"), 2)
+
+        # Finishing must stop the 11fps timer, not just change the text.
+        self.app._probe_active = False
+        self.app._refresh_status()
+        await self.pilot.pause()
+        self.assertIsNone(self.app.query_one(StatusBar)._timer)
+
+    async def test_the_theme_reaches_the_custom_strips_at_startup(self) -> None:
+        """The header bakes resolved colours, so it must be painted after the
+        designed theme is applied -- not left in Textual's default palette
+        until the first 1 Hz tick."""
+        await self.settle()
+        # Rich normalises a hex span style to ``rgb(r, g, b)``, so the expected
+        # style is built in that form rather than string-compared as hex.
+        red, green, blue = rgb(str(self.app.theme_variables["primary"]))
+        expected = f"rgb({red},{green},{blue}) bold"
+        styles = {str(span.style) for span in self.app.query_one(AppHeader).render().spans}
+        self.assertIn(
+            expected,
+            styles,
+            f"the header never picked up the active theme's primary; got {sorted(styles)}",
+        )
+
+    async def test_cycling_the_theme_repaints_the_chrome(self) -> None:
+        await self.settle()
+        header = self.app.query_one(AppHeader)
+        status = self.app.query_one(StatusBar)
+        before = {str(span.style) for span in header.render().spans}
+        before_status = {str(span.style) for span in status.render().spans}
+
+        self.app.action_cycle_theme()
+        await self.settle()
+
+        self.assertNotEqual(
+            {str(span.style) for span in header.render().spans},
+            before,
+            "the header kept the previous theme's colours",
+        )
+        self.assertNotEqual(
+            {str(span.style) for span in status.render().spans},
+            before_status,
+            "the status strip kept the previous theme's colours",
+        )
+
+    async def test_the_animation_cadence_changes_with_the_kind_of_work(self) -> None:
+        """A spinner must not run at the idle pulse's cadence, or vice versa."""
+        status = self.app.query_one(StatusBar)
+
+        status.update_status(socks_addr=None, http_addr=None, running=True)
+        self.assertEqual(status._interval, StatusBar.PULSE_SECONDS)
+
+        status.update_status(socks_addr=None, http_addr=None, running=True, busy="TESTING")
+        self.assertEqual(
+            status._interval,
+            StatusBar.FRAME_SECONDS,
+            "busy work must animate at the fast cadence, not inherit the pulse timer",
+        )
+
+        status.update_status(socks_addr=None, http_addr=None, running=False)
+        self.assertIsNone(status._timer)
+        self.assertIsNone(status._interval)
+
+    async def test_frames_and_panels_are_titled(self) -> None:
+        await self.settle()
+        self.assertEqual(self.app.query_one("#profiles-frame").border_title, "PROFILES")
+        self.assertEqual(self.app.query_one("#detail", ProfileDetail).border_title, "DETAIL")
+        self.assertEqual(self.app.query_one("#log-pane").border_title, "XRAY OUTPUT")
+
+    async def test_the_table_uses_a_row_cursor_that_preserves_cell_colour(self) -> None:
+        table = self.table()
+        self.assertEqual(table.cursor_type, "row", "the unit of action is the profile")
+        self.assertTrue(table.zebra_stripes, "wide rows need a stripe to stay readable")
+        self.assertEqual(
+            table.cursor_foreground_priority,
+            "renderable",
+            "the CSS cursor default would repaint the LAT bar and STATE flat",
+        )
+
+    async def test_a_short_terminal_uses_the_compact_chrome(self) -> None:
+        await self.settle()
+        await self.pilot.resize_terminal(80, 16)
+        await self.settle()
+        self.assertTrue(self.app.query_one(AppHeader).has_class("compact"))
+        self.assertTrue(self.app.query_one(KeyHints).has_class("compact"))
+        self.assertEqual(self.app.query_one(AppHeader).region.height, 1)
+
+        await self.pilot.resize_terminal(80, 30)
+        await self.settle()
+        self.assertFalse(self.app.query_one(AppHeader).has_class("compact"))
+        self.assertFalse(self.app.query_one(KeyHints).has_class("compact"))
+        self.assertEqual(self.app.query_one(AppHeader).region.height, 2)
 
 
 class TestAddProfile(TuiTestCase):
@@ -1216,12 +1364,18 @@ class TestThemes(TuiTestCase):
             await self.pilot.pause()
             seen.append(self.app.theme)
         self.assertEqual(seen[1:], list(THEME_ORDER[1:]) + [THEME_ORDER[0]])
-        self.assertEqual(seen[0], DEFAULT_THEME_NAME, "the pre-existing look is kept first")
+        self.assertEqual(seen[0], DEFAULT_THEME_NAME, "the cycle is anchored to the start-up theme")
 
-    async def test_the_first_theme_is_the_one_that_worked_before(self) -> None:
-        """Switching themes is additive: never pressing alt+t changes nothing."""
+    async def test_the_app_starts_on_the_designed_theme(self) -> None:
+        """The first look is chosen for the app, not inherited from Textual.
+
+        The palette is applied on mount rather than left to Textual's default,
+        so "the default theme is cyber-female" is a fact about the running app
+        and not merely about the registry.
+        """
         await self.settle()
         self.assertEqual(self.app.theme, DEFAULT_THEME_NAME)
+        self.assertIn(DEFAULT_THEME_NAME, THEMES)
 
     async def test_a_theme_actually_repaints(self) -> None:
         """Setting the reactive is not the same as the screen changing."""

@@ -88,7 +88,10 @@ TRANSPORT_CHOICES: tuple[tuple[str, str], ...] = (
 # Transports that carry a request path / Host header in the URI.
 PATH_TRANSPORTS = frozenset({"ws", "httpupgrade", "xhttp"})
 
-# Shared button row styling.
+# Shared layout for modal forms. The look of the controls themselves -- rounded
+# frames, hover pills -- lives in ``VlessApp.CSS`` instead, because a rule in a
+# widget's ``DEFAULT_CSS`` is only injected once that widget has been mounted,
+# and the confirm dialog can be the first modal a user ever opens.
 _BUTTON_CSS = """
 .fields-row {
     height: auto;
@@ -110,6 +113,36 @@ _BUTTON_CSS = """
     margin-right: 2;
 }
 """
+
+
+def _titled(title: str) -> VerticalScroll:
+    """A modal body frame with its title on the border.
+
+    Deliberately a helper rather than a line of CSS per screen: the title is a
+    *Python* attribute on the widget, and ``border-title-*`` in CSS only styles
+    it. Doing it here keeps the two from drifting apart.
+    """
+    container = VerticalScroll()
+    container.border_title = title
+    return container
+
+
+def _fade_in(screen: ModalScreen[Any]) -> None:
+    """Fade a modal's body in over ~160ms.
+
+    Motion is reserved for arrivals and departures; there is no idle animation
+    anywhere in this app. A screen that appears instantly while the rest of the
+    palette animates would read as a glitch rather than as restraint.
+    """
+    try:
+        container = screen.query_one(VerticalScroll)
+    except Exception:  # noqa: BLE001 - nothing to fade is not an error
+        return
+    try:
+        container.styles.opacity = 0.0
+        container.styles.animate("opacity", 1.0, duration=0.16)
+    except Exception:  # noqa: BLE001 - a static modal still works
+        container.styles.opacity = 1.0
 
 
 def build_validation_uri(link: Mapping[str, Any]) -> str:
@@ -228,7 +261,9 @@ class ConfirmScreen(ModalScreen[bool]):
         max-height: 80%;
         padding: 1 2;
         background: $surface;
-        border: round $primary;
+        border: round $warning;
+        border-title-color: $warning;
+        border-title-style: bold;
     }
     ConfirmScreen .question {
         height: auto;
@@ -256,7 +291,7 @@ class ConfirmScreen(ModalScreen[bool]):
         self._yes_label = yes_label
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll():
+        with _titled("CONFIRM"):
             yield Static(Text(self._question), classes="question")
             if self._detail:
                 yield Static(Text(self._detail), classes="detail")
@@ -265,6 +300,7 @@ class ConfirmScreen(ModalScreen[bool]):
                 yield Button("Cancel", id="no")
 
     def on_mount(self) -> None:
+        _fade_in(self)
         # Focus Cancel, not the destructive button: a stray Enter must not delete.
         self.query_one("#no", Button).focus()
 
@@ -304,6 +340,8 @@ class AddProfileScreen(ModalScreen[Profile | None]):
         padding: 1 2;
         background: $surface;
         border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
     AddProfileScreen #preview {
         height: auto;
@@ -334,7 +372,7 @@ class AddProfileScreen(ModalScreen[Profile | None]):
         self._parsed: dict[str, Any] | None = None
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll():
+        with _titled("NEW PROFILE"):
             yield Label("Name")
             yield Input(placeholder="defaults to the link's fragment", id="label")
             yield Label("VLESS link")
@@ -348,6 +386,7 @@ class AddProfileScreen(ModalScreen[Profile | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        _fade_in(self)
         self.query_one("#label", Input).focus()
         # The preview frame stays hidden until there is something to preview.
         # Shown from compose it was an empty accent-bordered box on open, which
@@ -509,6 +548,8 @@ class EditProfileScreen(ModalScreen[Profile | None]):
         padding: 1 2;
         background: $surface;
         border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
     EditProfileScreen #error {
         height: auto;
@@ -538,7 +579,7 @@ class EditProfileScreen(ModalScreen[Profile | None]):
 
     def compose(self) -> ComposeResult:
         link = self._profile.link
-        with VerticalScroll():
+        with _titled("EDIT PROFILE"):
             yield Label("Name")
             yield Input(value=self._profile.label, id="label")
             yield Label("Server")
@@ -588,6 +629,7 @@ class EditProfileScreen(ModalScreen[Profile | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        _fade_in(self)
         self.query_one("#label", Input).focus()
         self._apply_transport_visibility()
 
@@ -777,6 +819,8 @@ class AddressScreen(ModalScreen[Profile | None]):
         padding: 1 2;
         background: $surface;
         border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
     AddressScreen .title {
         height: auto;
@@ -816,7 +860,7 @@ class AddressScreen(ModalScreen[Profile | None]):
         self._profile = profile
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll():
+        with _titled("SERVER ADDRESS"):
             yield Static(Text("Server address"), classes="title")
             yield Static(
                 Text(f"currently {self._profile.link.get('server', '?')}:{self._profile.link.get('port', '?')}"),
@@ -840,6 +884,7 @@ class AddressScreen(ModalScreen[Profile | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        _fade_in(self)
         self.query_one("#server", Input).focus()
 
     def _cancel_pressed(self) -> None:
@@ -942,6 +987,8 @@ class HelpScreen(ModalScreen[None]):
         padding: 1 2;
         background: $surface;
         border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
     HelpScreen .title {
         height: auto;
@@ -975,7 +1022,7 @@ class HelpScreen(ModalScreen[None]):
                 ("l", "Add a vless:// link"),
                 ("s", "Add a subscription URL and import its nodes"),
                 ("e", "Edit the highlighted profile"),
-                ("i", "Change server address and port"),
+                ("i", "Change the profile's server address and port"),
                 ("d", "Delete the highlighted profile"),
             ),
         ),
@@ -1003,12 +1050,15 @@ class HelpScreen(ModalScreen[None]):
             table.add_section()
             table.add_row(Text(title, style="bold"), "")
             for key, description in rows:
-                table.add_row(Text(f"  {key}", style="cyan"), description)
-        with VerticalScroll():
+                table.add_row(Text(f"  {key}", style="bold"), description)
+        with _titled("KEYBOARD"):
             yield Static(Text("Keyboard"), classes="title")
             yield Static(table)
             yield Static(Text("Up and Down move, Enter also connects."), classes="hint")
             yield Static(Text("escape or h closes this."), classes="hint")
+
+    def on_mount(self) -> None:
+        _fade_in(self)
 
     def action_dismiss(self) -> None:
         self.dismiss(None)
@@ -1049,6 +1099,8 @@ class AddSubscriptionScreen(ModalScreen[str | None]):
         padding: 1 2;
         background: $surface;
         border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
     AddSubscriptionScreen .title {
         height: auto;
@@ -1122,7 +1174,7 @@ class AddSubscriptionScreen(ModalScreen[str | None]):
         existing = (
             f"Existing subscriptions: {', '.join(names)}" if names else "No subscriptions yet."
         )
-        with VerticalScroll():
+        with _titled("ADD SUBSCRIPTION"):
             yield Static(Text("Add subscription"), classes="title")
             yield Static(Text(existing), classes="existing", id="existing")
             yield Input(placeholder="name — e.g. provider-a", id="name")
@@ -1136,6 +1188,7 @@ class AddSubscriptionScreen(ModalScreen[str | None]):
                 yield Button("Cancel", id="cancel")
 
     def on_mount(self) -> None:
+        _fade_in(self)
         self.query_one("#name", Input).focus()
 
     # -- input handling -------------------------------------------------

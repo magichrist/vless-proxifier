@@ -28,12 +28,24 @@ import math
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.widgets import DataTable, Static
 
 from vlessp.profiles import SUB_SOURCE_PREFIX, Profile
+from vlessp.tui.graphics import (
+    METER_FULL,
+    gradient,
+    legible,
+    meter,
+    mix,
+    pulse,
+    readable_mix,
+    shimmer,
+    spinner,
+)
 
 # Width of the block-character bar in the LAT column. Four keeps the existing
 # seven-column table inside 80 characters, which is the width this thing has to
@@ -115,12 +127,47 @@ ProfileTable {
 }
 """
 
-#: Rows the detail panel occupies: one border rule plus three content lines.
+#: Rows the detail panel occupies, including its one-cell border on each side.
 #: Fixed so the table above it has a predictable height to reserve, and so the
 #: panel does not jump between a profile with a trend and one without. Kept here
 #: rather than inline in the CSS so ``VlessApp._fit_table_height`` subtracts the
-#: same number the stylesheet uses.
-DETAIL_HEIGHT = 4
+#: same number the stylesheet uses. Five is the smallest value that keeps the
+#: full rounded frame *and* the three content lines the panel draws.
+DETAIL_HEIGHT = 5
+
+#: Rows the profile frame's top and bottom border consume. The table itself
+#: stays borderless so its ``region.height`` is still a row count; the frame
+#: around it supplies the edge and the title.
+TABLE_FRAME_ROWS = 2
+
+
+def _theme_colour(widget: Static, role: str, fallback: str) -> str:
+    """Read a resolved theme colour, falling back without raising.
+
+    ``app.theme_variables`` values are usually hex strings, but Textual may hand
+    back an ``auto 87%`` expression for text roles. Rich spans cannot take that
+    syntax, and a crash inside ``render`` takes the whole widget, so anything
+    that is not a plain hex colour gets a designed fallback instead.
+    """
+    try:
+        value = str(widget.app.theme_variables.get(role, ""))
+    except Exception:  # noqa: BLE001 - a widget may render before it is mounted
+        return fallback
+    if value.startswith("#") and len(value) in (4, 7):
+        return value
+    return fallback
+
+
+def _pad_between(left: Text, right: Text, width: int) -> Text:
+    """Join two spans on one row, right-aligning ``right`` without wrapping.
+
+    ``cell_len`` rather than ``len`` because the glyphs in this UI are box
+    drawing and geometric shapes, which are single-cell but not always single
+    code points. Truncation is deliberately avoided: a status line that silently
+    eats its right-hand state is worse than one that wraps.
+    """
+    gap = width - cell_len(left.plain) - cell_len(right.plain)
+    return Text.assemble(left, " " * max(1, gap), right)
 
 
 def format_latency(latency_ms: int | None) -> str:
@@ -270,6 +317,21 @@ class ProfileTable(DataTable):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        # A row cursor, not a cell cursor. The unit of action in this table is
+        # the profile (`c`, `e`, `d` all operate on a whole row), so highlighting
+        # one cell implied a precision the keys never had. The cursor is still
+        # tracked by `cursor_coordinate`, which is what `selected_id` reads.
+        self.cursor_type = "row"
+        # Alternating row tints. Subtle on a true-colour terminal, and the only
+        # thing keeping a wide row readable once a 256-colour terminal has
+        # folded the surface palette into two near-identical greys.
+        self.zebra_stripes = True
+        # Let each cell's own colours survive the cursor. The default ("css")
+        # repaints the whole focused row in one foreground, which erases the two
+        # things this table is read for -- the coloured LAT bar and the green
+        # STATE word. The cursor background tint still marks the row, so nothing
+        # is lost by giving the renderables priority.
+        self.cursor_foreground_priority = "renderable"
         self._columns_ready = False
         self._sort_by_latency = False
         self._active_id: str | None = None
@@ -420,24 +482,186 @@ class ProfileTable(DataTable):
         return None
 
 
-class StatusBar(Static):
-    """Listener addresses and Xray version, red while nothing is listening.
+class AppHeader(Static):
+    """The brand strip: wordmark, product line, profile count and live state.
 
-    Red-when-stopped is the point of this widget: a stopped proxy that still
-    looks normal is the failure users actually report.
+    Replaces Textual's ``Header``. The built-in header is a title plus a clock,
+    which this app has no use for -- it has a service state that matters far
+    more than the time. One widget also means the wordmark, the state and the
+    count cannot drift out of alignment.
+
+    The wordmark is drawn character by character with an interpolated gradient
+    rather than one flat colour. While a switch is in flight the gradient phase
+    advances, which gives the strip a slow shimmer: motion here is a *state*
+    signal ("work is happening"), not decoration, and it stops the moment the
+    switch resolves.
+
+    Height is two rows (content plus a rule). On a short terminal the app adds
+    the ``compact`` class and the widget drops to one row; the rule is the thing
+    that goes, because it is chrome and the wordmark is identity.
+    """
+
+    DEFAULT_CSS = """
+    AppHeader {
+        height: 2;
+        padding: 0 1;
+        background: $surface;
+        color: $text;
+    }
+    AppHeader.compact {
+        height: 1;
+    }
+    """
+
+    #: Seconds between shimmer frames. 90ms is roughly eleven frames a second:
+    #: smooth enough to read as motion, slow enough that Textual is not asked to
+    #: repaint faster than a terminal can present.
+    FRAME_SECONDS = 0.09
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._running = False
+        self._switching = False
+        self._error = False
+        self._count = 0
+        self._phase = 0
+        self._timer: Any | None = None
+
+    # -- state ----------------------------------------------------------
+
+    def set_state(
+        self,
+        *,
+        running: bool,
+        switching: bool,
+        error: bool,
+        count: int,
+    ) -> None:
+        """Update every value the strip shows. Cheap; safe to call each tick.
+
+        The shimmer timer is only created while ``switching`` is true and is
+        stopped (not merely ignored) afterwards. A timer that runs forever to
+        animate nothing is the usual way a TUI becomes a fan spinner.
+        """
+        self._running = running
+        self._switching = switching
+        self._error = error
+        self._count = count
+        self._draw()
+        self._sync_timer()
+
+    def _sync_timer(self) -> None:
+        if self._switching and self._timer is None:
+            self._timer = self.set_interval(self.FRAME_SECONDS, self._advance)
+        elif not self._switching and self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _advance(self) -> None:
+        self._phase += 1
+        self._draw()
+
+    # -- rendering ------------------------------------------------------
+
+    def on_mount(self) -> None:
+        self.watch(self, "size", self._on_size, init=False)
+        self._draw()
+
+    def _on_size(self) -> None:
+        self._draw()
+
+    def _draw(self) -> None:
+        width = self.size.width or getattr(self.app.size, "width", 0) or 80
+        compact = self.has_class("compact")
+        foreground = _theme_colour(self, "foreground", "#eeeeee")
+        background = _theme_colour(self, "background", "#121212")
+        surface = _theme_colour(self, "surface", "#1c1c1c")
+        primary = legible(_theme_colour(self, "primary", "#ff5faf"), surface)
+        accent = legible(_theme_colour(self, "accent", "#af87ff"), surface)
+        secondary = legible(_theme_colour(self, "secondary", "#5fd7ff"), surface)
+        success = legible(_theme_colour(self, "success", "#5fff87"), surface)
+        error = legible(_theme_colour(self, "error", "#ff5f5f"), surface)
+        warning = legible(_theme_colour(self, "warning", "#ffd75f"), surface)
+        # Mixed against the strip's own ground, not the screen's. On the light
+        # palette those are different colours (white surface over cream ground),
+        # and a muted tone computed for the wrong one lands too faint. The helper
+        # caps the blend at 4.5:1 so a secondary label stays readable.
+        muted = readable_mix(foreground, surface, preferred=0.42)
+
+        left = Text()
+        left.append("▐ ", style=f"bold {primary}")
+        word = "VLESS"
+        phase = self._phase / 48.0 if self._switching else 0.0
+        for character, colour in zip(
+            word, gradient(word, (primary, accent, secondary, primary), phase=phase), strict=True
+        ):
+            if self._switching:
+                colour = shimmer(colour, foreground, phase=(self._phase / 32.0) % 1.0)
+            left.append(character, style=f"bold {colour}")
+        left.append("   ")
+        left.append("tunnel control", style=f"italic {muted}")
+
+        right = Text()
+        right.append(f"{self._count} profile{'' if self._count == 1 else 's'}", style=muted)
+        right.append("   ")
+        if self._switching:
+            right.append(f"{spinner(self._phase)} SWITCHING", style=f"bold {warning}")
+        elif self._error:
+            right.append("✕ ERROR", style=f"bold {error}")
+        elif self._running:
+            right.append(f"{pulse(self._phase // 8)} RUNNING", style=f"bold {success}")
+        else:
+            right.append("○ STOPPED", style=muted)
+
+        row = _pad_between(left, right, max(20, width - 2))
+        if compact:
+            self.update(row)
+            return
+        rule = Text("─" * max(1, width - 2), style=mix(primary, background, 0.62))
+        self.update(Text.assemble(row, "\n", rule))
+
+
+class StatusBar(Static):
+    """Listener addresses, Xray version, and the service state.
+
+    Two things are load-bearing here. When the proxy is stopped the whole strip
+    is de-emphasised and the state word says ``STOPPED`` in the error colour: a
+    stopped tunnel that looks normal is the failure users actually report. And
+    while a probe or a switch is running, the right-hand side becomes an
+    animated spinner (plus a meter for a sweep) so "nothing is happening" and
+    "everything is happening off the event loop" do not look identical.
+
+    The widget owns its own timer because the animation needs ~11fps while the
+    app's status tick is 1Hz. The timer exists only while there is something to
+    animate.
     """
 
     DEFAULT_CSS = """
     StatusBar {
         dock: bottom;
         height: 1;
+        padding: 0 1;
         background: $panel;
         color: $text;
     }
     StatusBar.stopped {
-        color: $error;
+        color: $text-muted;
     }
     """
+
+    FRAME_SECONDS = 0.09
+    PULSE_SECONDS = 0.70
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._parts: list[tuple[str, str]] = []
+        self._running = False
+        self._busy: str | None = None
+        self._done = 0
+        self._total = 0
+        self._phase = 0
+        self._timer: Any | None = None
+        self._interval: float | None = None
 
     def update_status(
         self,
@@ -446,30 +670,95 @@ class StatusBar(Static):
         http_addr: str | None,
         xray_version: str | None = None,
         running: bool = False,
+        busy: str | None = None,
+        done: int = 0,
+        total: int = 0,
     ) -> None:
         """Render the status line.
 
         Markup is disabled for the lifetime of the widget and values are wrapped
         in ``Text``, so an address or version string can never be interpreted as
-        Textual markup.
+        Textual markup. ``busy`` is a plain label (``SWITCHING``/``TESTING``),
+        never user text.
         """
-        parts: list[str] = []
+        parts: list[tuple[str, str]] = []
         if socks_addr:
-            parts.append(f"SOCKS {socks_addr}")
+            parts.append(("SOCKS", socks_addr))
         if http_addr:
-            parts.append(f"HTTP {http_addr}")
+            parts.append(("HTTP", http_addr))
         if xray_version:
-            parts.append(f"xray {xray_version}")
-        text = Text("   ".join(parts) if parts else "no proxy configured")
-        # Same wording and casing as the header's state word, so the two surfaces
-        # do not describe the same service with different vocabularies.
-        if running:
-            text.append("   ")
-            text.append("RUNNING", style="bold green")
-        else:
-            text.append("   STOPPED")
-        self.update(text)
+            parts.append(("xray", xray_version))
+        self._parts = parts
+        self._running = running
+        self._busy = busy
+        self._done = done
+        self._total = total
+        self._draw()
+        self._sync_timer()
         self.set_class(not running, "stopped")
+
+    # -- animation ------------------------------------------------------
+
+    def _sync_timer(self) -> None:
+        wanted = self.FRAME_SECONDS if self._busy else (self.PULSE_SECONDS if self._running else None)
+        if wanted == self._interval:
+            return
+        # The cadence changes between "busy" (11fps spinner) and "running"
+        # (a slow breath). Keeping the timer alive and only changing ``wanted``
+        # would leave the spinner at the pulse's 1.4fps -- which reads as a
+        # freeze -- or leave the idle breath repainting eleven times a second.
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        self._interval = wanted
+        if wanted is not None:
+            self._timer = self.set_interval(wanted, self._advance)
+
+    def _advance(self) -> None:
+        self._phase += 1
+        self._draw()
+
+    # -- rendering ------------------------------------------------------
+
+    def _draw(self) -> None:
+        width = self.size.width or getattr(self.app.size, "width", 0) or 80
+        foreground = _theme_colour(self, "foreground", "#eeeeee")
+        # The strip paints ``$panel``, so that is the ground to mute against.
+        # Computing against ``$background`` made the labels too faint on the
+        # light palette, where panel and background are very different colours.
+        panel = _theme_colour(self, "panel", "#262626")
+        muted = readable_mix(foreground, panel, preferred=0.40)
+        success = legible(_theme_colour(self, "success", "#5fff87"), panel)
+        error = legible(_theme_colour(self, "error", "#ff5f5f"), panel)
+        warning = legible(_theme_colour(self, "warning", "#ffd75f"), panel)
+
+        left = Text()
+        if self._parts:
+            for index, (label, value) in enumerate(self._parts):
+                if index:
+                    left.append("  ·  ", style=muted)
+                left.append(f"{label} ", style=muted)
+                left.append(value, style=f"bold {foreground}")
+        else:
+            left.append("no proxy configured", style=muted)
+
+        right = Text()
+        if self._busy:
+            right.append(spinner(self._phase), style=f"bold {warning}")
+            right.append(f" {self._busy}", style=f"bold {warning}")
+            if self._total:
+                right.append(" ")
+                bar = meter(self._done, self._total, width=8)
+                filled = bar.count(METER_FULL)
+                right.append(bar[:filled], style=f"bold {warning}")
+                right.append(bar[filled:], style=muted)
+                right.append(f" {self._done}/{self._total}", style=warning)
+        elif self._running:
+            right.append(f"{pulse(self._phase // 8)} RUNNING", style=f"bold {success}")
+        else:
+            right.append("● STOPPED", style=f"bold {error}")
+
+        self.update(_pad_between(left, right, max(20, width - 2)))
 
 
 class KeyHints(Static):
@@ -499,10 +788,18 @@ class KeyHints(Static):
         /* Lives in the footer strip (see VlessApp.compose), not the flow. The
            hints are chrome: in the flow they drifted up the screen whenever the
            list was short, so the same keys sat in a different place on every
-           screen. One row, always, directly above the status bar. */
-        height: 1;
+           screen. One content row, always, directly above the status bar; the
+           second row is the hairline that separates the strip from the list. */
+        height: 2;
+        border-top: solid $panel;
         padding: 0 1;
         color: $text-muted;
+    }
+    KeyHints.compact {
+        /* On a short terminal the rule is the thing that goes: it is pure
+           chrome, and the keys themselves are the part that has to stay. */
+        height: 1;
+        border-top: none;
     }
     """
 
@@ -612,16 +909,20 @@ class ProfileDetail(Static):
 
     DEFAULT_CSS = """
     ProfileDetail {
-        /* A fixed band: one border rule plus three content lines (identity /
-           trend / stats). Fixed rather than ``auto`` for two reasons. It gives
-           the table above a height to reserve against, so a long list can never
-           push the panel off-screen; and the panel does not change size as the
-           cursor moves between a profile with a trend and one without, so the
-           table never jumps under the reader's eye. Kept in step with
-           :data:`DETAIL_HEIGHT`, which the app subtracts when sizing the table. */
-        height: 4;
+        /* A fixed band with a full rounded frame, not just a top rule. The
+           frame is what makes the panel read as a panel rather than as a stray
+           line of text under the table, and it gives the title somewhere to
+           live. Fixed height for two reasons: the table above gets a number to
+           reserve against, and the band does not resize as the cursor moves
+           between a profile with a trend and one without, so the table never
+           jumps under the reader's eye. Kept in step with :data:`DETAIL_HEIGHT`,
+           which the app subtracts when sizing the table. */
+        height: 5;
         padding: 0 1;
-        border-top: solid $panel;
+        border: round $panel-lighten-1;
+        background: $surface;
+        border-title-color: $primary;
+        border-title-style: bold;
     }
     ProfileDetail .spark {
         height: 1;
@@ -635,6 +936,14 @@ class ProfileDetail(Static):
     #: where block characters give 8 across the full cell, so a trend over 20
     #: probes stays readable in one line without stealing table rows.
     SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+    BORDER_TITLE = "DETAIL"
+
+    def on_mount(self) -> None:
+        # Textual renders this on the top border, between the corners. Set in
+        # Python rather than CSS because ``border-title`` is a widget attribute,
+        # not a stylesheet property (only its colour/alignment/style are CSS).
+        self.border_title = self.BORDER_TITLE
 
     def show_profile(self, profile: Profile | None) -> None:
         """Render ``profile``, or a hint when nothing is selected.
@@ -657,6 +966,9 @@ class ProfileDetail(Static):
     def _build(self, profile: Profile) -> Text:
         link = profile.link
         out = Text()
+        # A leading accent rule mirrors the active-row marker in the table, so
+        # the panel is visually tied to the row it describes.
+        out.append("▌ ", style="bold")
         out.append(f"{profile.label}", style="bold")
         host = f"{link.get('server', '?')}:{link.get('port', '?')}"
         out.append(f"  {host}", style="dim")
@@ -729,12 +1041,14 @@ def _sparkline(history: Sequence[int | None], *, width: int) -> tuple[Text, int]
 
 __all__ = [
     "ACTIVE_MARK",
+    "AppHeader",
     "DASH",
     "DETAIL_HEIGHT",
     "LATENCY_SCALE_MAX",
     "LAT_BAR_WIDTH",
     "LIVE_MARK",
     "SOURCE_NAME_MAX",
+    "TABLE_FRAME_ROWS",
     "UNAVAILABLE_MARK",
     "UNAVAILABLE_STYLE",
     "KeyHints",

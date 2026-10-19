@@ -42,11 +42,15 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import Header, Static
+from textual.widgets import Static
 
 from vlessp import APP_NAME
 from vlessp.errors import AppError
-from vlessp.profiles import SUB_SECRET_PREFIX, SUB_SOURCE_PREFIX, ProfileStore
+from vlessp.profiles import (
+    SUB_SECRET_PREFIX,
+    SUB_SOURCE_PREFIX,
+    ProfileStore,
+)
 from vlessp.subscriptions import fetch_subscription, parse
 from vlessp.tui.screens import (
     AddProfileScreen,
@@ -56,9 +60,11 @@ from vlessp.tui.screens import (
     EditProfileScreen,
     HelpScreen,
 )
-from vlessp.tui.theme import apply_theme, next_theme, register_all
+from vlessp.tui.theme import DEFAULT_THEME_NAME, apply_theme, next_theme, register_all
 from vlessp.tui.widgets import (
     DETAIL_HEIGHT,
+    TABLE_FRAME_ROWS,
+    AppHeader,
     KeyHints,
     ProfileDetail,
     ProfileTable,
@@ -92,13 +98,25 @@ LOG_REFRESH_SECONDS = 1.0
 # service, not here.
 MAX_LOG_NOTES = 200
 
-# Fixed chrome around the table, in rows, used to size it. The header is one row;
-# the footer two (key hints, then the status bar); the detail band DETAIL_HEIGHT;
-# the log pane twelve when it is shown. The table is capped at whatever is left,
-# so a long list scrolls instead of pushing the panels off-screen.
-HEADER_ROWS = 1
-FOOTER_ROWS = 2  # key hints + status bar
+# Fixed chrome around the table, in rows, used to size it. The app header owns
+# two rows when there is room (wordmark plus hairline) and one when there is
+# not; the footer strip owns the key hints (two rows with their hairline, one
+# without) plus the single status row; the detail band DETAIL_HEIGHT; the
+# profile frame TABLE_FRAME_ROWS for its top and bottom edge. The table is
+# capped at whatever is left, so a long list scrolls instead of pushing the
+# panels off-screen.
+FULL_HEADER_ROWS = 2
+COMPACT_HEADER_ROWS = 1
+FULL_FOOTER_ROWS = 3  # key hints (2) + status bar (1)
+COMPACT_FOOTER_ROWS = 2
+
+#: Terminal height below which the chrome compacts. Twenty rows is the point at
+#: which the framed list would otherwise be shorter than the panels it sits
+#: above, which is the layout failing rather than a terminal being small.
+COMPACT_HEIGHT = 20
+
 LOG_PANE_ROWS = 12
+LOG_MIN_ROWS = 4
 MIN_TABLE_ROWS = 3
 
 
@@ -138,17 +156,119 @@ class VlessApp(App[None]):
     CSS = """
     Screen {
         layers: base;
+        background: $background;
     }
-    #footer {
-        dock: bottom;
-        height: 2;
+    /* The list is framed rather than bare. The frame is what supplies the edge
+       on the screen's main surface: the table keeps ``height: auto`` and a
+       borderless body, so its ``region.height`` is still a count of rows, while
+       the frame around it draws the rounded edge and carries the title. The
+       frame takes the leftover height (1fr) so a short list sits in a full
+       panel instead of leaving a void under it. */
+    #profiles-frame {
+        height: 1fr;
+        border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
+        /* The panel floor is the screen ground, not a raised surface. A list
+           that fills the window should read as the window, with the frame
+           providing the edge; painting it ``$surface`` made a light theme look
+           like one enormous white card. */
+        background: $background;
+    }
+    #profiles-frame ProfileTable {
+        height: auto;
+        background: $background;
+    }
+    ProfileTable > .datatable--header {
+        background: $panel;
+        /* Ink, not the accent. A caption is small text, and the light palette's
+           raspberry only clears 4.5:1 against the cream ground -- against the
+           pink panel it does not, so the accent belongs on the frame title
+           (which sits on the ground) and never here. */
+        color: $foreground;
+        text-style: bold;
+    }
+    ProfileTable > .datatable--even-row {
+        /* A tint of the foreground rather than a derived surface shade. Textual's
+           ``$surface-lighten-N`` clamps to near-identical values on a dark theme
+           once a 256-colour terminal quantises it, which is exactly the case this
+           stripe exists for; blending the foreground keeps a visible step on both
+           the dark and the light palette. */
+        background: $foreground 7%;
+    }
+    /* No colour override on the cursor: the LAT bar and the STATE word carry
+       their own colour, and a cursor rule with ``color:`` set would repaint
+       every cell in the row flat, erasing both. The tint alone marks the row. */
+    ProfileTable > .datatable--cursor {
+        background: $primary 22%;
+    }
+    ProfileTable:focus > .datatable--cursor {
+        background: $primary 34%;
+    }
+    ProfileTable > .datatable--hover {
+        background: $accent 18%;
     }
     #log-pane {
         height: 12;
         border: round $accent;
+        border-title-color: $accent;
+        border-title-style: bold;
         padding: 0 1;
         overflow-y: auto;
         color: $text-muted;
+        background: $surface;
+    }
+    #footer {
+        dock: bottom;
+        height: 3;
+    }
+    /* Control look is global, not per-modal: a rule inside a widget's
+       DEFAULT_CSS is only injected once that widget mounts, and the confirm
+       dialog can be the first modal opened. Rounded fields replace Textual's
+       half-block "tall" border, which meets badly in most terminal fonts. */
+    Input, Select {
+        border: round $panel-lighten-1;
+        background: $surface;
+    }
+    Input:focus, Select:focus {
+        border: round $primary;
+    }
+    /* Buttons as outlined pills: quiet at rest, filled on hover, so the focused
+       one is obvious without every button shouting at once. */
+    Button {
+        border: round $primary;
+        background: $panel;
+        color: $primary;
+        min-width: 12;
+    }
+    Button:hover {
+        background: $primary;
+        color: $background;
+    }
+    Button.-error {
+        border: round $error;
+        color: $error;
+    }
+    Button.-error:hover {
+        background: $error;
+        color: $background;
+    }
+    Button.-success {
+        border: round $success;
+        color: $success;
+    }
+    Button.-success:hover {
+        background: $success;
+        color: $background;
+    }
+    Button:disabled {
+        border: round $panel;
+        color: $text-muted;
+        background: $surface;
+    }
+    /* Modal frames carry their title on the border, styled per screen. */
+    .modal-title {
+        border-title-style: bold;
     }
     """
 
@@ -227,6 +347,11 @@ class VlessApp(App[None]):
             self._http_addr = http_addr or None
         self._xray_version = xray_version or getattr(service, "xray_version", None)
         self._switching = False
+        self._probe_active = False
+        self._probe_total = 0
+        self._probe_done = 0
+        self._header_rows = FULL_HEADER_ROWS
+        self._footer_rows = FULL_FOOTER_ROWS
         self._last_error: str | None = None
         self._notes: list[str] = []
         self._xray_log: str = ""
@@ -256,8 +381,15 @@ class VlessApp(App[None]):
     # -- composition -----------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        yield ProfileTable(id="profiles")
+        # A custom header replaces Textual's. The built-in one is a title and a
+        # clock; this app has a service state and a profile count that matter
+        # far more, and one widget keeps them aligned with each other.
+        yield AppHeader(id="app-header")
+        # The table lives inside a framed container. Frame and table are
+        # separate widgets so the table's height stays a pure row count; the
+        # frame contributes the edge (see TABLE_FRAME_ROWS).
+        with Vertical(id="profiles-frame"):
+            yield ProfileTable(id="profiles")
         # Detail directly under the table it describes. With the table now hugging
         # its rows (see ProfileTable.CSS) the panel reads as attached to the data
         # rather than stranded at the bottom. The log pane is a diagnostic surface
@@ -281,10 +413,22 @@ class VlessApp(App[None]):
         # Themes register here rather than lazily inside the key handler: the
         # first alt+t would otherwise repaint the whole screen as it registers.
         register_all(self)
+        # The designed palette is applied explicitly. Textual would otherwise
+        # start on its own utility default, and "the default is one of ours"
+        # only holds if something actually sets it.
+        apply_theme(self, DEFAULT_THEME_NAME)
+        # The custom strips bake resolved colours into their Text at draw time,
+        # and ``theme_variables`` only catches up on the next refresh, so this
+        # repaint is deferred rather than immediate. Without it the header and
+        # status bar keep Textual's default palette until the 1 Hz tick.
+        self.call_after_refresh(self._refresh_status)
+        self.query_one("#profiles-frame", Vertical).border_title = "PROFILES"
+        self.query_one("#log-pane", Static).border_title = "XRAY OUTPUT"
         self.query_one(ProfileTable).focus()
         # The log pane starts collapsed: it is a diagnostic surface, not part of
         # the main workflow, and an always-open pane would halve the table.
         self.query_one("#log-pane", Static).display = False
+        self._apply_chrome(self.size.height)
         self._fit_table_height()
         self._reload_table()
         # A cheap in-memory status tick. The log refresh below it is a worker
@@ -298,7 +442,32 @@ class VlessApp(App[None]):
         app's cached size is updated, so reading it here would re-apply the old
         dimensions and the table would keep its stale height.
         """
+        self._apply_chrome(event.size.height)
         self._fit_table_height(height=event.size.height)
+
+    def _apply_chrome(self, height: int) -> None:
+        """Switch the chrome between its full and compact forms.
+
+        The framed list needs twelve rows of chrome to look right. On a shorter
+        terminal that chrome would crowd out the data, so the two decorative
+        rows -- the header hairline and the hints hairline -- are dropped and the
+        remaining numbers are updated so :meth:`_fit_table_height` divides up the
+        space it actually has.
+        """
+        if height <= 0:
+            return
+        compact = height < COMPACT_HEIGHT
+        self._header_rows = COMPACT_HEADER_ROWS if compact else FULL_HEADER_ROWS
+        self._footer_rows = COMPACT_FOOTER_ROWS if compact else FULL_FOOTER_ROWS
+        try:
+            header = self.query_one("#app-header", AppHeader)
+            hints = self.query_one(KeyHints)
+            footer = self.query_one("#footer", Vertical)
+        except Exception:  # noqa: BLE001 - resize can arrive mid-compose
+            return
+        header.set_class(compact, "compact")
+        hints.set_class(compact, "compact")
+        footer.styles.height = self._footer_rows
 
     def _fit_table_height(self, *, height: int | None = None) -> None:
         """Cap the profile table at the rows left for it.
@@ -310,15 +479,28 @@ class VlessApp(App[None]):
         docked siblings only, and a percentage is blind to them — so the number
         is computed here from the terminal height and re-applied on resize.
 
+        The log pane is sized first, from the same budget: it is the one panel
+        that is allowed to shrink, so opening it on a short terminal gives up
+        pane rows rather than pushing the detail band off the screen.
+
         The cap is in rows, not cells, because it is subtracted from a row count.
         """
         if height is None:
             height = self.size.height
         if height <= 0:
             return  # before the first layout there is nothing to divide up
-        reserved = HEADER_ROWS + FOOTER_ROWS + DETAIL_HEIGHT
-        if self.query_one("#log-pane", Static).display:
-            reserved += LOG_PANE_ROWS
+        reserved = self._header_rows + self._footer_rows + DETAIL_HEIGHT + TABLE_FRAME_ROWS
+        try:
+            pane = self.query_one("#log-pane", Static)
+        except Exception:  # noqa: BLE001 - sizing can be requested mid-compose
+            pane = None
+        if pane is not None and pane.display:
+            room = height - reserved - MIN_TABLE_ROWS
+            pane_rows = max(LOG_MIN_ROWS, min(LOG_PANE_ROWS, room))
+            if reserved + pane_rows + MIN_TABLE_ROWS > height:
+                pane_rows = max(1, height - reserved - MIN_TABLE_ROWS)
+            pane.styles.height = pane_rows
+            reserved += pane_rows
         self.query_one(ProfileTable).styles.max_height = max(
             MIN_TABLE_ROWS, height - reserved
         )
@@ -464,11 +646,16 @@ class VlessApp(App[None]):
         """``t`` — probe every profile concurrently and fill the LAT column."""
         if not self._on_main_screen():
             return
-        if not self._store.all():
+        profiles = self._store.all()
+        if not profiles:
             self.notify("There are no profiles to test.", severity="warning", markup=False)
             return
         self._pending_results = 0
+        self._probe_active = True
+        self._probe_total = len(profiles)
+        self._probe_done = 0
         self._note("testing all profiles…")
+        self._refresh_status()
         self._probe_worker()
 
     def action_edit_address(self) -> None:
@@ -593,6 +780,10 @@ class VlessApp(App[None]):
         if not self._on_main_screen():
             return
         applied = apply_theme(self, next_theme(self.theme))
+        # Repaint the two strips that bake colours into their content, once the
+        # new variables are live. Everything else is styled by CSS and restyles
+        # itself when the theme changes.
+        self.call_after_refresh(self._refresh_status)
         self.notify(f"theme: {applied}", severity="information", markup=False)
 
     def action_show_help(self) -> None:
@@ -721,11 +912,16 @@ class VlessApp(App[None]):
         except AppError:
             return  # the profile was deleted while the sweep was running
         self._pending_results += 1
+        self._probe_done += 1
         if self._pending_results >= RESORT_EVERY:
             self._reload_table(sort_by_latency=True)
+        self._refresh_status()
 
     def _probe_finished(self) -> None:
+        self._probe_active = False
+        self._probe_done = self._probe_total
         self._reload_table(sort_by_latency=True)
+        self._refresh_status()
 
     def _begin_switch(self) -> None:
         self._switching = True
@@ -798,6 +994,20 @@ class VlessApp(App[None]):
         # same row index can hold entirely different content.
         self._refresh_detail()
 
+    def _busy_label(self) -> str | None:
+        """The label for whatever is running off the event loop, if anything.
+
+        Only one of these can be true at a time in practice: switching holds the
+        service lock, and a sweep is not started while one is in flight. The
+        order still matters for the moment between a keypress and the worker
+        actually starting.
+        """
+        if self._switching:
+            return "SWITCHING"
+        if self._probe_active:
+            return "TESTING"
+        return None
+
     def _refresh_status(self) -> None:
         """Update the header and status bar. Reads only in-memory service state."""
         count = len(self._store.all())
@@ -805,15 +1015,28 @@ class VlessApp(App[None]):
         # No profile label is interpolated here: the header is the one surface
         # that stays visible behind every modal.
         self.sub_title = f"{count} profile{'' if count == 1 else 's'} · {dot} {word}"
+        running = self._is_running()
+        try:
+            self.query_one(AppHeader).set_state(
+                running=running,
+                switching=self._switching,
+                error=self._last_error is not None,
+                count=count,
+            )
+        except Exception:  # noqa: BLE001 - header may not exist yet
+            pass
         try:
             status = self.query_one(StatusBar)
-        except Exception:
+        except Exception:  # noqa: BLE001 - status may not exist yet
             return
         status.update_status(
             socks_addr=self._socks_addr,
             http_addr=self._http_addr,
             xray_version=self._xray_version,
-            running=self._is_running(),
+            running=running,
+            busy=self._busy_label(),
+            done=self._probe_done,
+            total=self._probe_total if self._probe_active else 0,
         )
 
     def _state_indicator(self) -> tuple[str, str]:
