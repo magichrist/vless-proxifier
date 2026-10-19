@@ -295,10 +295,12 @@ class TestFlagParsing(CliTestCase):
                 # parse_args raises SystemExit on an unknown flag; that is the point.
                 self.assertTrue(parser.parse_args(argv))
 
-    def test_defaults_match_v0(self) -> None:
+    def test_listener_defaults_defer_to_the_store(self) -> None:
+        # The flag default is unset on purpose: an explicit --socks/--http wins,
+        # otherwise the address saved in the UI is used (loopback by default).
         args = cli.build_parser().parse_args([])
-        self.assertEqual(args.socks, "127.0.0.1:10808")
-        self.assertEqual(args.http, "127.0.0.1:10809")
+        self.assertIsNone(args.socks)
+        self.assertIsNone(args.http)
         self.assertIsNone(args.xray)
         self.assertFalse(args.no_http)
         self.assertFalse(args.allow_insecure)
@@ -354,6 +356,23 @@ class TestCheckMode(CliTestCase):
         self.assertIn("Xray rejected the generated configuration", err)
         self.assertIn("fake-xray: configuration rejected", err)
 
+    def test_link_mode_ignores_saved_listeners(self) -> None:
+        """A scripted --link run must not depend on a file the UI edits."""
+        self.store.set_listeners("127.0.0.1:12080", "127.0.0.1:12081")
+        self.store.save()
+        seen: dict[str, object] = {}
+        real = cli.build_xray_config
+
+        def spy(link, socks, http):
+            seen.update(socks=socks, http=http)
+            return real(link, socks, http)
+
+        with mock.patch.object(cli, "build_xray_config", spy):
+            code, _out, _err = self.run_main(["--check", "--link", EXAMPLE_LINK])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["socks"], "127.0.0.1:10808")
+        self.assertEqual(seen["http"], "127.0.0.1:10809")
+
     def test_check_output_never_contains_the_uuid(self) -> None:
         self.set_mode("reject-echo")
         code, out, err = self.run_main(["--check", "--link", EXAMPLE_LINK])
@@ -404,10 +423,17 @@ class TestCheckMode(CliTestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("validated", out)
 
-    def test_non_loopback_listener_is_refused(self) -> None:
-        code, _out, err = self.run_main(["--check", "--link", EXAMPLE_LINK, "--socks", "0.0.0.0:10808"])
+    def test_non_loopback_listener_is_accepted_in_check_mode(self) -> None:
+        # --check validates but binds nothing, so a wildcard address is fine;
+        # binding it for real is the user's deliberate choice.
+        code, out, err = self.run_main(["--check", "--link", EXAMPLE_LINK, "--socks", "0.0.0.0:10808"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("validated", out)
+
+    def test_hostname_listener_is_refused(self) -> None:
+        code, _out, err = self.run_main(["--check", "--link", EXAMPLE_LINK, "--socks", "example.com:10808"])
         self.assertEqual(code, 2)
-        self.assertIn("loopback", err)
+        self.assertIn("IP address", err)
 
     def test_explicit_xray_path_is_validated_by_the_real_resolver(self) -> None:
         # Patches back through to the real resolve_xray: with an explicit path it
@@ -619,6 +645,42 @@ class TestProfileMode(CliTestCase):
         self.assertIsNone(captured["http"])
         self.assertIs(captured["secrets"], self.secrets)
 
+    def test_saved_listeners_are_used_when_flags_are_absent(self) -> None:
+        """The addresses edited in the UI are the standing setting for `--profile`."""
+        self.add_profile("home")
+        socks = f"127.0.0.1:{_free_port()}"
+        http = f"127.0.0.1:{_free_port()}"
+        self.store.set_listeners(socks, http)
+        self.store.save()
+        captured: dict[str, object] = {}
+
+        def capture(store, secrets, xray, *, socks_addr, http_addr):
+            captured.update(socks=socks_addr, http=http_addr)
+            raise AppError("stop here")
+
+        with mock.patch.object(cli, "ProxyService", capture):
+            code, _out, _err = self.run_main(["--profile", "home"])
+        self.assertEqual(code, 2)
+        self.assertEqual(captured["socks"], socks)
+        self.assertEqual(captured["http"], http)
+
+    def test_an_explicit_flag_wins_over_the_saved_listener(self) -> None:
+        self.add_profile("home")
+        self.store.set_listeners("127.0.0.1:10808", "127.0.0.1:10809")
+        self.store.save()
+        socks = f"127.0.0.1:{_free_port()}"
+        captured: dict[str, object] = {}
+
+        def capture(store, secrets, xray, *, socks_addr, http_addr):
+            captured.update(socks=socks_addr, http=http_addr)
+            raise AppError("stop here")
+
+        with mock.patch.object(cli, "ProxyService", capture):
+            code, _out, _err = self.run_main(["--profile", "home", "--socks", socks])
+        self.assertEqual(code, 2)
+        self.assertEqual(captured["socks"], socks)
+        self.assertEqual(captured["http"], "127.0.0.1:10809", "only the flag is overridden")
+
 
 class TestLinkModeRun(CliTestCase):
     """The serving path for a raw link: banner, then a clean stop."""
@@ -702,6 +764,14 @@ class TestTuiMode(CliTestCase):
     def test_app_receives_no_http_listener_as_none(self) -> None:
         _code, _out, _err, captured = self._run_tui(["--no-http"])
         self.assertIsNone(captured["http_addr"])
+
+    def test_saved_listeners_are_used_when_flags_are_absent(self) -> None:
+        socks, http = f"127.0.0.1:{_free_port()}", f"127.0.0.1:{_free_port()}"
+        self.store.set_listeners(socks, http)
+        self.store.save()
+        _code, _out, _err, captured = self._run_tui([])
+        self.assertEqual(captured["socks_addr"], socks)
+        self.assertEqual(captured["http_addr"], http)
 
     def test_app_receives_the_resolved_version_label(self) -> None:
         _code, _out, _err, captured = self._run_tui([])

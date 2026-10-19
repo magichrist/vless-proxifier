@@ -54,9 +54,50 @@ __all__ = [
     "UUID_RE",
     "build_xray_config",
     "is_valid_hostname",
+    "listeners_conflict",
+    "parse_listener_addr",
     "parse_vless_uri",
     "query_params",
 ]
+
+
+def parse_listener_addr(address: str) -> tuple[str, int]:
+    """Split ``HOST:PORT`` listener text into a normalised IP literal and port.
+
+    The one parser for a local listener address, shared by the CLI's
+    ``--socks``/``--http`` flags, the TUI's listener editor, and
+    :func:`build_xray_config`. Raises :class:`AppError` on anything that is not
+    an ``IP:PORT`` with a usable port.
+
+    Only an IP literal is accepted; a hostname is refused because it could
+    resolve to something different at spawn time than the text the user read.
+    Any IP is allowed -- loopback, a specific interface, or ``0.0.0.0`` /
+    ``::`` for every interface. Binding beyond loopback is a deliberate choice
+    the caller makes (it exposes an unauthenticated proxy to the network), so it
+    is not silently rewritten here.
+    """
+    host, sep, port_s = address.rpartition(":")
+    if not sep or not host or not port_s.isdigit() or not 1 <= int(port_s) <= 65535:
+        raise AppError("Listener address must be HOST:PORT with a port from 1 to 65535.")
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        raise AppError(
+            "Listener host must be an IP address (e.g. 127.0.0.1, ::1, or 0.0.0.0)."
+        ) from None
+    return str(ip), int(port_s)
+
+
+def listeners_conflict(socks_addr: str, http_addr: str | None) -> bool:
+    """True when both listeners would use the same port.
+
+    Compared by port only, which is the check the CLI has always made: two
+    listeners on the same port collide whatever interface each binds. The HTTP
+    listener being disabled (``None`` or empty) can never conflict.
+    """
+    if not http_addr:
+        return False
+    return socks_addr.rpartition(":")[2] == http_addr.rpartition(":")[2]
 
 
 def is_valid_hostname(host: str) -> bool:
@@ -283,10 +324,13 @@ def build_xray_config(link: dict[str, Any], socks_addr: str, http_addr: str | No
     """Turn a parsed link plus local listener addresses into an Xray config.
 
     Pure: no filesystem, no network, no environment. The only thing that can
-    fail is a bad listener address, and that failure is a security decision —
-    a local proxy exposed beyond loopback hands an open relay to the network the
-    machine is attached to, so a non-loopback address is refused outright rather
-    than honoured with a warning.
+    fail is a bad listener address.
+
+    Addresses are validated by :func:`parse_listener_addr`, which accepts any IP
+    literal. Loopback is the default and the recommended choice -- a proxy bound
+    beyond loopback is an unauthenticated open relay for the network the machine
+    is attached to -- but binding a specific interface or ``0.0.0.0`` is a
+    deliberate opt-in rather than an error.
 
     ``http_addr`` of ``None`` (or empty) means "no HTTP listener"; the caller
     decides, not this function.
@@ -296,19 +340,12 @@ def build_xray_config(link: dict[str, Any], socks_addr: str, http_addr: str | No
     for tag, address, protocol in (("socks-in", socks_addr, "socks"), ("http-in", http_addr, "http")):
         if not address:
             continue
-        host, sep, port_s = address.rpartition(":")
-        if not sep or not host or not port_s.isdigit() or not 1 <= int(port_s) <= 65535:
-            raise AppError(f"Invalid local listener address for {tag}.")
         try:
-            ip = ipaddress.ip_address(host.strip("[]"))
-        except ValueError:
-            # Not an IP literal, so it cannot be proven loopback. A hostname is
-            # not accepted here: it could resolve to anything at spawn time.
-            raise AppError("Proxy listeners must bind to loopback only (127.0.0.1 or ::1).") from None
-        if not ip.is_loopback:
-            raise AppError("Proxy listeners must bind to loopback only (127.0.0.1 or ::1).")
+            ip_literal, port = parse_listener_addr(address)
+        except AppError as exc:
+            raise AppError(f"{exc} (for the {protocol} listener)") from None
         inbound: dict[str, Any] = {
-            "tag": tag, "listen": str(ip), "port": int(port_s), "protocol": protocol,
+            "tag": tag, "listen": ip_literal, "port": port, "protocol": protocol,
             "settings": {"auth": "noauth", "udp": True, "userLevel": 0} if protocol == "socks" else {},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
         }

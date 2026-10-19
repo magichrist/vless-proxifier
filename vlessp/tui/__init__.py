@@ -15,6 +15,7 @@ from vlessp.tui.screens import (
     ConfirmScreen,
     EditProfileScreen,
     HelpScreen,
+    ListenersScreen,
 )
 from vlessp.tui.theme import THEME_ORDER, THEMES, apply_theme, next_theme
 from vlessp.tui.widgets import ProfileTable, StatusBar
@@ -26,6 +27,7 @@ __all__ = [
     "ConfirmScreen",
     "EditProfileScreen",
     "HelpScreen",
+    "ListenersScreen",
     "ProfileTable",
     "StatusBar",
     "THEMES",

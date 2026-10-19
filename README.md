@@ -54,6 +54,23 @@ curl --proxy http://127.0.0.1:10809 https://api.ipify.org
 Both should return the public IP of the VLESS egress. A bound listener is not proof the
 upstream is reachable; the curl calls are the end-to-end check.
 
+### Changing the local ports
+
+Press `p` in the UI to move the local SOCKS5/HTTP listeners — the *internal* ends your
+apps connect to — without touching any profile. It edits the listen host and port for each
+protocol (and can turn the HTTP listener off). The change is applied immediately: if a
+tunnel is running it is restarted on the new ports, otherwise the new addresses are used at
+the next connect.
+
+The setting is saved in `profiles.json` beside an `active` id, so it survives a restart.
+`--socks` / `--http` override it for a single run, and a scripted `--link` run ignores it
+entirely (that mode never reads the store).
+
+The default is loopback, because the proxy has no authentication. Binding `0.0.0.0` or a
+LAN address is allowed — for example to share the tunnel with another device on your own
+network — but the dialog warns when you do, since it exposes an open proxy to everything
+that can reach that interface.
+
 ---
 
 ## The UI
@@ -66,6 +83,7 @@ upstream is reachable; the curl calls are the end-to-end check.
 | `s` | Add a subscription URL | imports every node in the feed; masked input |
 | `e` | Edit a profile | non-secret fields only — the UUID is not editable here |
 | `i` | Change server and port | short form for the most common edit; every other field is carried through |
+| `p` | Change the **local** SOCKS5/HTTP ports | where your apps connect; never touches the profile or its UUID |
 | `d` | Delete a profile | asks first; removes the Keychain item too |
 | `t` | Test all | one TCP latency probe per profile, sorts the table |
 | `o` | Show/hide the output pane | Xray's last output |
@@ -81,7 +99,7 @@ keeps working. Both are aliases and are not advertised in the key hints — `h` 
 One line, pinned above the status bar, every key:
 
 ```
-c connect · space stop/resume · t test · l add link · s add sub · e edit · i ip/port · d delete · o output · alt+t theme · h help · q quit
+c connect · space stop/resume · t test · l add link · s add sub · e edit · i ip/port · p local ports · d delete · o output · alt+t theme · h help · q quit
 ```
 
 It replaces Textual's built-in `Footer`, which was the wrong tool: the footer renders one
@@ -89,17 +107,17 @@ key/label pair per binding on a single un-wrapped line, and twelve bindings came
 columns**, so on an 80-column terminal the tail was silently cut to an ellipsis — hiding `q`, the
 last key anyone wants hidden. It looked complete while lying about what was available.
 
-Twelve readable keys need 138 columns, so rather than pick one compromised layout the line
+Thirteen readable keys need 154 columns, so rather than pick one compromised layout the line
 **adapts to the terminal**, taking the widest tier that fits:
 
 | Width | Rendered |
 |---|---|
-| ≥138 | `c connect · space stop/resume · t test · l add link · …` |
-| ≥128 | `c conn · space stop · t test · l add link · …` |
-| ≥80 | `c:conn sp:stop t:test l:add s:sub e:edit i:ip d:del o:out ^T:theme h:help q:quit` |
-| <80 | `c space t l s e i d o alt+t h q` (keys only) |
+| ≥154 | `c connect · space stop/resume · t test · l add link · …` |
+| ≥138 | `c conn · space stop · t test · l add link · …` |
+| ≥88 | `c:conn sp:stop t:test l:add s:sub e:edit i:ip p:ports d:del o:out ^T:theme h:help q:quit` |
+| <88 | `c space t l s e i p d o alt+t h q` (keys only) |
 
-Below 80 it drops the *labels* rather than truncating: a key with no description is still
+Below 88 it drops the *labels* rather than truncating: a key with no description is still
 pressable and still honest, whereas a cut-off line silently hides keys nobody can find. A test
 sweeps every width from 33 to 160 and asserts the rendered line always fits.
 
@@ -232,8 +250,8 @@ python3 vless_proxy.py --tui
 | `--list` | — | Print the profile table and exit. No binary is resolved and no network is touched. |
 | `--tui` | — | Force the Textual UI. The default when no link source is given. |
 | `--xray PATH` | — | Use an existing Xray executable instead of resolving one. |
-| `--socks ADDR` | `127.0.0.1:10808` | SOCKS5 listener. Loopback only. |
-| `--http ADDR` | `127.0.0.1:10809` | HTTP listener. Loopback only. |
+| `--socks ADDR` | saved setting (loopback `127.0.0.1:10808`) | SOCKS5 listener. An IP literal `HOST:PORT`; overrides the address saved in the UI. |
+| `--http ADDR` | saved setting (loopback `127.0.0.1:10809`) | HTTP listener. Same rule; overrides the saved address. |
 | `--no-http` | off | Disable the HTTP listener. |
 | `--allow-insecure` | off | Permit a link that disables TLS certificate verification. Unsafe. |
 | `--check` | off | Validate the URI and the generated config with Xray; open nothing. |

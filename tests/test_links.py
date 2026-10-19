@@ -3,8 +3,8 @@
 These complement tests/test_vless_proxy.py rather than replace it: that file
 guards the pre-refactor behaviour through the old entry point and must stay
 unmodified, while this one drives vlessp.links directly, covers the rejection
-paths end to end, and pins the security invariants (loopback-only listeners, TLS
-verification on by default, no URI in any error message).
+paths end to end, and pins the security invariants (listener addresses must be
+IP literals, TLS verification on by default, no URI in any error message).
 
 Everything here is pure-function testing: no socket, no subprocess, no file.
 """
@@ -16,6 +16,8 @@ from vlessp.links import (
     MAX_URI_BYTES,
     build_xray_config,
     is_valid_hostname,
+    listeners_conflict,
+    parse_listener_addr,
     parse_vless_uri,
     query_params,
 )
@@ -362,15 +364,66 @@ class TlsPolicyTests(unittest.TestCase):
                     parse_vless_uri(link)
 
 
+class ListenerAddressTests(unittest.TestCase):
+    """``parse_listener_addr``/``listeners_conflict`` are one rule for everyone.
+
+    Shared by the CLI flags, the TUI editor, and the store, so these cases are
+    the contract all three depend on: an IP literal and a usable port, nothing
+    else. A hostname is refused because it could resolve elsewhere at spawn.
+    """
+
+    def test_parse_accepts_any_ip_literal(self):
+        cases = {
+            "127.0.0.1:10808": ("127.0.0.1", 10808),
+            "0.0.0.0:1": ("0.0.0.0", 1),
+            "[::1]:65535": ("::1", 65535),
+            "192.168.1.5:8443": ("192.168.1.5", 8443),
+        }
+        for address, expected in cases.items():
+            with self.subTest(address=address):
+                self.assertEqual(parse_listener_addr(address), expected)
+
+    def test_parse_rejects_a_hostname_or_a_bad_port(self):
+        for bad in (
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "127.0.0.1:65536",
+            "127.0.0.1:abc",
+            ":10808",
+            "example.com:443",
+            "",
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(AppError):
+                    parse_listener_addr(bad)
+
+    def test_conflict_compares_ports_only(self):
+        self.assertTrue(listeners_conflict("127.0.0.1:10808", "127.0.0.1:10808"))
+        self.assertTrue(listeners_conflict("0.0.0.0:10808", "127.0.0.1:10808"))
+        self.assertFalse(listeners_conflict("127.0.0.1:10808", "127.0.0.1:10809"))
+        self.assertFalse(listeners_conflict("127.0.0.1:10808", None))
+        self.assertFalse(listeners_conflict("127.0.0.1:10808", ""))
+
+
 class ConfigTests(unittest.TestCase):
     def setUp(self):
         self.link = parse_vless_uri(WS_TLS_PIN)
 
-    def test_listeners_are_loopback_only(self):
-        for address in ("0.0.0.0:10808", "192.168.1.5:10808", "example.com:10808", "[2001:db8::1]:10808"):
+    def test_non_ip_literal_listeners_are_rejected(self):
+        # A hostname can resolve to something different at spawn time than the
+        # text says, so it is refused; any *IP literal* is allowed now (the user
+        # may deliberately bind a specific interface or 0.0.0.0).
+        for address in ("example.com:10808", "localhost:10808", "::10808"):
             with self.subTest(address=address):
                 with self.assertRaises(AppError):
                     build_xray_config(self.link, address, None)
+
+    def test_wildcard_and_interface_listeners_are_accepted(self):
+        for address, expected in (("0.0.0.0:10808", "0.0.0.0"), ("192.168.1.5:10808", "192.168.1.5")):
+            with self.subTest(address=address):
+                config = build_xray_config(self.link, address, None)
+                self.assertEqual(config["inbounds"][0]["listen"], expected)
+                self.assertEqual(config["inbounds"][0]["port"], 10808)
 
     def test_malformed_listener_address(self):
         for address in ("127.0.0.1", "127.0.0.1:0", "127.0.0.1:70000", "127.0.0.1:abc", ":10808"):

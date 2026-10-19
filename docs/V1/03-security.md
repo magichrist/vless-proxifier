@@ -25,7 +25,9 @@ public key by construction.
 
 Every control in [`SECURITY.md`](../../SECURITY.md) still holds, and each is asserted by a test:
 
-- Listeners bind **loopback only**; `build_xray_config` refuses a non-loopback address.
+- Listeners bind to an **IP literal**; `build_xray_config` refuses a hostname, because it could
+  resolve somewhere different at spawn time than the text the user read. The default is loopback
+  (`127.0.0.1`), and the TUI warns when a listener is bound beyond it.
 - TLS verification on by default; `insecure=1` refused without `--allow-insecure`.
 - `pcs` pinning refused when combined with `insecure`.
 - Download allowlists hosts, caps size, and verifies the archive SHA-256 before install.
@@ -66,4 +68,6 @@ Neither half is a defence against a compromised machine. Do not treat either as 
 ## Still true
 
 Do not expose the SOCKS or HTTP ports beyond loopback. V1 adds no proxy authentication, so
-anything that can reach the port can use the tunnel.
+anything that can reach the port can use the tunnel. The tools *allow* a wider bind — `p` in the
+UI, or `--socks` / `--http` — but that is a deliberate exposure the user opts into, and the UI
+warns inline when an enabled host is not loopback.

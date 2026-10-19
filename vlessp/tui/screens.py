@@ -32,6 +32,7 @@ is the correct and only route back onto the loop from a screen's worker.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import urllib.parse
 from collections.abc import Mapping
@@ -44,11 +45,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
 from vlessp.errors import AppError
 from vlessp.links import parse_vless_uri
-from vlessp.profiles import Profile, ProfileStore
+from vlessp.profiles import Listeners, Profile, ProfileStore, validate_listeners
 from vlessp.secrets import SecretStore
 
 try:
@@ -962,6 +963,229 @@ class AddressScreen(ModalScreen[Profile | None]):
         self.query_one("#error", Static).update(Text(message))
 
 
+def _split_listener(address: str | None) -> tuple[str, str]:
+    """Split ``HOST:PORT`` text into its two fields for the editor.
+
+    Brackets around an IPv6 host are stripped so the field shows ``::1`` rather
+    than ``[::1]``; :func:`_join_listener` puts them back.
+    """
+    if not address:
+        return "", ""
+    host, _, port = address.rpartition(":")
+    return host.strip("[]"), port
+
+
+def _join_listener(host: str, port: str) -> str:
+    """Rebuild ``HOST:PORT`` from two fields, bracketing an IPv6 host."""
+    host = host.strip()
+    port = port.strip()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{host}:{port}"
+
+
+class ListenersScreen(ModalScreen[Listeners | None]):
+    """Edit the local SOCKS5/HTTP listen addresses and port — the *internal* ends.
+
+    These are where your apps point (curl ``--socks5``, a browser's HTTP proxy),
+    never the remote VLESS server: moving a listener changes where the tunnel is
+    reachable, not where traffic egresses. The remote server/port live on the
+    profile and are edited with ``i``/``e``.
+
+    Validation is :func:`~vlessp.profiles.validate_listeners`, the same rule the
+    store and the CLI apply, so this dialog cannot produce an address that later
+    fails to bind for a reason the user cannot see. A host bound beyond loopback
+    is warned about inline: the proxy has no authentication, so binding widely is
+    a deliberate exposure.
+    """
+
+    DEFAULT_CSS = """
+    ListenersScreen {
+        align: center middle;
+    }
+    ListenersScreen > VerticalScroll {
+        width: 90%;
+        max-width: 62;
+        height: auto;
+        max-height: 90%;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+        border-title-color: $primary;
+        border-title-style: bold;
+    }
+    ListenersScreen .title {
+        height: auto;
+    }
+    ListenersScreen .current {
+        height: auto;
+        margin-bottom: 1;
+        color: $text-muted;
+    }
+    /* Each listener is one row: a fixed label, then host and port side by side.
+       Two rows rather than four labelled fields is what keeps the dialog inside
+       a 24-row terminal, so Save/Cancel are never pushed off the bottom. */
+    ListenersScreen .row {
+        height: auto;
+        margin-bottom: 1;
+    }
+    ListenersScreen .row .row-label {
+        width: 9;
+        padding-top: 1;
+        color: $text-muted;
+    }
+    ListenersScreen .row .host {
+        width: 1fr;
+        margin-right: 1;
+    }
+    ListenersScreen .row .port {
+        width: 11;
+    }
+    ListenersScreen Checkbox {
+        height: auto;
+        margin-bottom: 1;
+    }
+    ListenersScreen .actions {
+        height: auto;
+    }
+    ListenersScreen Button {
+        margin-right: 2;
+    }
+    ListenersScreen .warning {
+        height: auto;
+        margin-bottom: 1;
+        color: $warning;
+    }
+    ListenersScreen .error {
+        height: auto;
+        color: $error;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, *, socks: str, http: str | None) -> None:
+        super().__init__()
+        self._socks = socks
+        self._http = http
+
+    def compose(self) -> ComposeResult:
+        socks_host, socks_port = _split_listener(self._socks)
+        http_host, http_port = _split_listener(self._http)
+        with _titled("LOCAL PROXY"):
+            yield Static(Text("Local proxy listeners"), classes="title")
+            yield Static(
+                Text("Where your apps connect — the remote server lives on the profile."),
+                classes="current",
+            )
+            with Horizontal(classes="row"):
+                yield Label("SOCKS5", classes="row-label")
+                yield Input(value=socks_host, placeholder="host", id="socks-host", classes="host")
+                yield Input(value=socks_port, placeholder="port", id="socks-port", classes="port", type="integer")
+            yield Checkbox("Enable HTTP listener", value=self._http is not None, id="http-on")
+            with Horizontal(classes="row http-row"):
+                yield Label("HTTP", classes="row-label")
+                yield Input(
+                    value=http_host or "127.0.0.1", placeholder="host", id="http-host", classes="host"
+                )
+                yield Input(
+                    value=http_port or "10809", placeholder="port", id="http-port", classes="port",
+                    type="integer",
+                )
+            yield Static("", id="warning", classes="warning")
+            yield Static("", id="error", classes="error")
+            with Horizontal(classes="actions"):
+                yield Button("Save", id="save", variant="success")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        _fade_in(self)
+        self.query_one("#socks-host", Input).focus()
+        self._sync_http_fields()
+        self._warn_if_exposed()
+
+    # -- input handling -------------------------------------------------
+
+    @on(Checkbox.Changed, "#http-on")
+    def _http_toggled(self) -> None:
+        self._sync_http_fields()
+        self._warn_if_exposed()
+
+    @on(Input.Changed, "#socks-host")
+    @on(Input.Changed, "#http-host")
+    def _host_changed(self) -> None:
+        self._warn_if_exposed()
+
+    @on(Input.Submitted)
+    def _any_submitted(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#save")
+    def _save_pressed(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def _cancel_pressed(self) -> None:
+        self.dismiss(None)
+
+    def _http_enabled(self) -> bool:
+        return bool(self.query_one("#http-on", Checkbox).value)
+
+    def _sync_http_fields(self) -> None:
+        """Show the HTTP row only when the HTTP listener is on."""
+        self.query_one(".http-row").display = self._http_enabled()
+
+    def _warn_if_exposed(self) -> None:
+        """Warn inline when an enabled host is not loopback."""
+        hosts = [self.query_one("#socks-host", Input).value]
+        if self._http_enabled():
+            hosts.append(self.query_one("#http-host", Input).value)
+        exposed = False
+        for host in hosts:
+            text = host.strip().strip("[]")
+            try:
+                ip = ipaddress.ip_address(text)
+            except ValueError:
+                continue  # a bad host is reported by Save, not here
+            if not ip.is_loopback:
+                exposed = True
+                break
+        warning = self.query_one("#warning", Static)
+        warning.update(
+            Text("Bound beyond loopback: the proxy has no authentication.") if exposed else ""
+        )
+
+    # -- save -----------------------------------------------------------
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        """Validate on the loop and dismiss with the new addresses.
+
+        Nothing here touches the filesystem or a subprocess: the app applies and
+        persists the result, so a rejected pair never leaves this dialog.
+        """
+        socks = _join_listener(
+            self.query_one("#socks-host", Input).value,
+            self.query_one("#socks-port", Input).value,
+        )
+        http: str | None = None
+        if self._http_enabled():
+            http = _join_listener(
+                self.query_one("#http-host", Input).value,
+                self.query_one("#http-port", Input).value,
+            )
+        try:
+            socks, http = validate_listeners(socks, http)
+        except AppError as exc:
+            self.query_one("#error", Static).update(Text(str(exc)))
+            return
+        self.dismiss(Listeners(socks=socks, http=http))
+
+
 class HelpScreen(ModalScreen[None]):
     """Key reference, grouped by intent instead of listed flat.
 
@@ -1023,6 +1247,7 @@ class HelpScreen(ModalScreen[None]):
                 ("s", "Add a subscription URL and import its nodes"),
                 ("e", "Edit the highlighted profile"),
                 ("i", "Change the profile's server address and port"),
+                ("p", "Change the local SOCKS5 / HTTP listen ports"),
                 ("d", "Delete the highlighted profile"),
             ),
         ),
@@ -1286,6 +1511,7 @@ __all__ = [
     "ConfirmScreen",
     "EditProfileScreen",
     "HelpScreen",
+    "ListenersScreen",
     "SECURITY_CHOICES",
     "TRANSPORT_CHOICES",
     "build_validation_uri",

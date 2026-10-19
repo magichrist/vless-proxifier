@@ -45,6 +45,7 @@ which made the two most frequent actions the hardest to reach.
 | `s` | Add a subscription URL | V2 stub; explains itself rather than no-oping |
 | `e` | Edit profile | Non-secret fields only |
 | `i` | Change server + port | Short form; all other fields carried through the parser |
+| `p` | Change local SOCKS5/HTTP ports | The tunnel's *internal* ends, not the profile; applied live and saved |
 | `d` | Delete profile | Confirmation modal |
 | `t` | Test all (latency) | Concurrent, sorted on completion |
 | `o` | Toggle output pane | Was `l` in the first draft |
@@ -62,6 +63,13 @@ separate keys.
 often is "this node moved to a different address or port". A two-field screen for that is not
 duplication, it is the common path. It still validates through `build_validation_uri` →
 `parse_vless_uri`, so editing the address cannot drop a Reality `pbk` or a certificate pin.
+
+**Why `p` is separate from `i`.** They both edit a host and a port, which is exactly why they
+must not share a screen. `i` edits the *remote* server the tunnel dials — a property of the
+profile, whose change is validated through the link parser. `p` edits the *local* listeners
+where your apps connect — a property of the machine, saved beside the profiles and applied by
+restarting the tunnel. Merging them would put "change where my browser points" and "change
+where my traffic egresses" behind one key and one form.
 
 ---
 

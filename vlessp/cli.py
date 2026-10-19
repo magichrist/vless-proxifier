@@ -45,7 +45,13 @@ from typing import Any
 from . import APP_NAME
 from .errors import AppError
 from .links import MAX_URI_BYTES, build_xray_config, parse_vless_uri
-from .profiles import SUB_SECRET_PREFIX, SUB_SOURCE_PREFIX, ProfileStore
+from .profiles import (
+    DEFAULT_HTTP_ADDR,
+    DEFAULT_SOCKS_ADDR,
+    SUB_SECRET_PREFIX,
+    SUB_SOURCE_PREFIX,
+    ProfileStore,
+)
 from .proxy import ProxyService
 from .secrets import MacOSKeychain, NullSecretStore, SecretStore
 from .subscriptions import fetch_subscription, parse
@@ -130,13 +136,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--xray", help="path to an existing Xray executable")
     parser.add_argument(
         "--socks",
-        default="127.0.0.1:10808",
-        help="SOCKS5 listen address (loopback only; default 127.0.0.1:10808)",
+        default=None,
+        help=(
+            "SOCKS5 listen address HOST:PORT (default 127.0.0.1:10808; "
+            "overrides the address saved in the UI)"
+        ),
     )
     parser.add_argument(
         "--http",
-        default="127.0.0.1:10809",
-        help="HTTP listen address (loopback only; default 127.0.0.1:10809)",
+        default=None,
+        help=(
+            "HTTP listen address HOST:PORT (default 127.0.0.1:10809; "
+            "overrides the address saved in the UI)"
+        ),
     )
     parser.add_argument("--no-http", action="store_true", help="disable the HTTP proxy listener")
     parser.add_argument(
@@ -206,23 +218,39 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         args.sub = None
 
-    http_addr = _http_addr(args)
     if args.sub or args.refresh_subs:
         return _run_subscriptions(args)
     if args.tui:
-        return _run_tui(args, http_addr)
+        return _run_tui(args)
     if args.list_profiles:
         return _run_list()
     if args.profile:
-        return _run_profile(args, http_addr)
+        return _run_profile(args)
     if args.link or args.link_file or args.check:
-        return _run_link(args, http_addr)
-    return _run_tui(args, http_addr)
+        return _run_link(args)
+    return _run_tui(args)
 
 
 def _http_addr(args: argparse.Namespace) -> str | None:
-    """The HTTP listener address, or None when ``--no-http`` disabled it."""
+    """The HTTP listener address named on the command line, or None.
+
+    None means either ``--no-http`` or "not given"; the store's persisted value
+    supplies the address when the store is in play. Link mode, which never
+    loads a store, falls back to the V0 default instead (see :func:`_run_link`).
+    """
     return None if args.no_http else args.http
+
+
+def _resolve_listeners(args: argparse.Namespace, store: ProfileStore) -> tuple[str, str | None]:
+    """Listener addresses for a store-backed run: flags win, else what was saved.
+
+    The CLI flags are the one-shot override; the addresses edited in the TUI are
+    the standing setting. ``--no-http`` disables the HTTP listener outright.
+    """
+    socks = args.socks or store.listeners.socks
+    if args.no_http:
+        return socks, None
+    return socks, args.http or store.listeners.http
 
 
 def _reject_identical_listeners(socks_addr: str, http_addr: str | None) -> None:
@@ -405,7 +433,7 @@ def _import_one_subscription(name: str, store: ProfileStore, secrets: SecretStor
     print(line)
 
 
-def _run_profile(args: argparse.Namespace, http_addr: str | None) -> int:
+def _run_profile(args: argparse.Namespace) -> int:
     """Connect a saved profile and serve until interrupted.
 
     Mirrors link mode's banner and interrupt behaviour so a script can move from
@@ -413,6 +441,7 @@ def _run_profile(args: argparse.Namespace, http_addr: str | None) -> int:
     """
     store = _load_store()
     secrets = _secret_backend()
+    socks, http_addr = _resolve_listeners(args, store)
     # Resolve first so an unknown reference gets a message that says what to do.
     # The reference itself is argv and is never echoed: a user could type
     # anything, including a link, and this program does not put argv in errors.
@@ -424,7 +453,7 @@ def _run_profile(args: argparse.Namespace, http_addr: str | None) -> int:
         ) from None
     xray = resolve_xray(args.xray, update=args.update_xray)
     print(f"Using Xray executable: {xray}")
-    service = ProxyService(store, secrets, xray, socks_addr=args.socks, http_addr=http_addr)
+    service = ProxyService(store, secrets, xray, socks_addr=socks, http_addr=http_addr)
     print(f"Starting local proxy for profile {resolved.label!r}…", flush=True)
     try:
         # By id, not by the original ref: the ref has been resolved once already
@@ -447,25 +476,34 @@ def _run_profile(args: argparse.Namespace, http_addr: str | None) -> int:
         is_running=lambda: service.running,
         stop=service.disconnect,
         log_tail=service.log_tail,
-        socks_addr=args.socks,
+        socks_addr=socks,
         http_addr=http_addr,
     )
 
 
-def _run_link(args: argparse.Namespace, http_addr: str | None) -> int:
+def _run_link(args: argparse.Namespace) -> int:
     """The V0 path: one link from a flag, a file, or stdin, then serve.
 
     Behaviour-preserving on purpose. In particular the order of operations is
     unchanged -- parse, build config, reject identical listeners, *then* resolve
     the binary -- so a bad address fails before a download is attempted, exactly
     as before.
+
+    This mode never loads the profile store, so the persisted listener settings
+    do not apply here: an absent flag falls back to the V0 loopback default. That
+    is deliberate -- a scripted ``--link`` run must not start depending on a file
+    the user edited in the UI.
     """
+    socks = args.socks or DEFAULT_SOCKS_ADDR
+    http_addr = _http_addr(args)
+    if http_addr is None and not args.no_http:
+        http_addr = DEFAULT_HTTP_ADDR
     raw = _read_link_source(args)
     parsed = parse_vless_uri(raw, allow_insecure=args.allow_insecure)
     # Drop the raw credential-bearing URI promptly.
     del raw
-    config = build_xray_config(parsed, args.socks, http_addr)
-    _reject_identical_listeners(args.socks, http_addr)
+    config = build_xray_config(parsed, socks, http_addr)
+    _reject_identical_listeners(socks, http_addr)
     xray = resolve_xray(args.xray, update=args.update_xray)
     print(f"Using Xray executable: {xray}")
     if args.check:
@@ -476,7 +514,7 @@ def _run_link(args: argparse.Namespace, http_addr: str | None) -> int:
         )
         return 0
     print("Starting local proxy…", flush=True)
-    process = XrayProcess(xray, socks_addr=args.socks, http_addr=http_addr)
+    process = XrayProcess(xray, socks_addr=socks, http_addr=http_addr)
     try:
         process.apply(parsed)
     except AppError as exc:
@@ -486,12 +524,12 @@ def _run_link(args: argparse.Namespace, http_addr: str | None) -> int:
         is_running=lambda: process.running,
         stop=process.stop,
         log_tail=lambda: process.last_log,
-        socks_addr=args.socks,
+        socks_addr=socks,
         http_addr=http_addr,
     )
 
 
-def _run_tui(args: argparse.Namespace, http_addr: str | None) -> int:
+def _run_tui(args: argparse.Namespace) -> int:
     """Launch the Textual UI over the same service the headless modes use.
 
     The UI is *not* told to reconnect the last active profile. `c` reconnects it
@@ -507,14 +545,15 @@ def _run_tui(args: argparse.Namespace, http_addr: str | None) -> int:
         )
     store = _load_store()
     secrets = _secret_backend()
+    socks, http_addr = _resolve_listeners(args, store)
     xray = resolve_xray(args.xray, update=args.update_xray)
-    service = ProxyService(store, secrets, xray, socks_addr=args.socks, http_addr=http_addr)
+    service = ProxyService(store, secrets, xray, socks_addr=socks, http_addr=http_addr)
     app = _build_app(
         service,
         store,
         secrets=secrets,
         allow_insecure=args.allow_insecure,
-        socks_addr=args.socks,
+        socks_addr=socks,
         http_addr=http_addr,
         xray_version=_xray_version_label(xray),
     )

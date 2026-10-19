@@ -403,6 +403,59 @@ class TestDisconnect(ProxyTestCase):
         self.assertFalse(service.running)
 
 
+class TestSetListeners(ProxyTestCase):
+    """Changing the local ports, with and without a live tunnel.
+
+    ``set_listeners`` is what the TUI's ``p`` dialog calls. When nothing is
+    running it is a pure reconfiguration; when a tunnel is up it must restart
+    onto the new ports through the same validate-before-stop ordering every
+    other switch uses, and a rejected address must leave the tunnel serving.
+    """
+
+    def test_without_a_tunnel_it_only_reconfigures(self) -> None:
+        service = self.make_service()
+        new_socks = f"127.0.0.1:{_free_port()}"
+        new_http = f"127.0.0.1:{_free_port()}"
+        restarted = service.set_listeners(socks_addr=new_socks, http_addr=new_http)
+        self.assertFalse(restarted, "nothing was running, so nothing was restarted")
+        # The next connect will bind these.
+        self.assertEqual(service._xray.socks_addr, new_socks)
+        self.assertEqual(service._xray.http_addr, new_http)
+        self.assertEqual(self.spawn_pids(), [], "no process may be spawned by a reconfiguration")
+
+    def test_a_live_tunnel_is_restarted_on_the_new_ports(self) -> None:
+        service = self.make_service()
+        self.add_profile("home")
+        service.connect("home")
+        first_pids = self.spawn_pids()
+        self.assertEqual(len(first_pids), 1)
+
+        new_socks = f"127.0.0.1:{_free_port()}"
+        new_http = f"127.0.0.1:{_free_port()}"
+        restarted = service.set_listeners(socks_addr=new_socks, http_addr=new_http)
+        self.assertTrue(restarted)
+        self.assertTrue(service.running, "the tunnel must be serving on the new ports")
+        self.assertEqual(len(self.spawn_pids()), 2, "restarting spawns exactly one new child")
+        self.assertEqual(service._xray.socks_addr, new_socks)
+
+    def test_a_rejected_address_keeps_the_tunnel_and_rolls_back(self) -> None:
+        service = self.make_service()
+        self.add_profile("home")
+        service.connect("home")
+        original_socks = service._xray.socks_addr
+        original_http = service._xray.http_addr
+
+        with self.assertRaises(AppError):
+            service.set_listeners(socks_addr="not an ip", http_addr=None)
+
+        # validate-before-stop: the old child is untouched...
+        self.assertTrue(service.running)
+        self.assertEqual(len(self.spawn_pids()), 1, "a rejected address must not spawn a child")
+        # ...and the supervisor is not left claiming addresses it could not bind.
+        self.assertEqual(service._xray.socks_addr, original_socks)
+        self.assertEqual(service._xray.http_addr, original_http)
+
+
 class TestConnectActive(ProxyTestCase):
     def test_no_active_returns_none(self) -> None:
         service = self.make_service()

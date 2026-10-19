@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from vlessp.errors import AppError
+from vlessp.links import listeners_conflict, parse_listener_addr
 
 if TYPE_CHECKING:
     from vlessp.secrets import SecretStore
@@ -37,6 +38,14 @@ if TYPE_CHECKING:
 STORE_VERSION: int = 1
 
 APP_NAME = "vless-python-proxy"
+
+# Local proxy listener defaults. Owned here because the store persists them and
+# every front-end (CLI flags, the TUI's status bar and listener editor, and
+# ``ProxyService``) must agree on what "unset" means. Loopback is the safe
+# default: the proxy has no authentication, so bound beyond loopback it is an
+# open relay for whatever network the machine is on.
+DEFAULT_SOCKS_ADDR: str = "127.0.0.1:10808"
+DEFAULT_HTTP_ADDR: str = "127.0.0.1:10809"
 
 # An imported profile's ``source``. A subscription's NAME goes after the
 # prefix: "subscription:<name>". Empty ``source`` means hand-added, and that
@@ -78,6 +87,62 @@ DEFAULT_STORE_PATH = app_data_dir() / "profiles.json"
 # cannot grow memory without limit, and small enough that the sparkline stays
 # readable in a narrow panel — a trend you cannot read is a trend you cannot use.
 MAX_LATENCY_HISTORY = 20
+
+
+@dataclass(frozen=True)
+class Listeners:
+    """The local proxy's listen addresses, persisted with the store.
+
+    ``http`` is ``None`` when the HTTP listener is disabled. These are kept in
+    ``profiles.json`` rather than passed only at launch so a change made in the
+    TUI survives a restart, exactly like ``active_id`` does.
+    """
+
+    socks: str = DEFAULT_SOCKS_ADDR
+    http: str | None = DEFAULT_HTTP_ADDR
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {"socks": self.socks, "http": self.http}
+
+
+def validate_listeners(socks: str, http: str | None) -> tuple[str, str | None]:
+    """Validate a listener pair, returning the normalised values.
+
+    One rule for both the store (loading and saving) and any caller: each
+    address is an ``IP:PORT`` (see :func:`~vlessp.links.parse_listener_addr`)
+    and, when HTTP is enabled, the two ports differ. Raises :class:`AppError`
+    with a message written from the shape of the problem — never from the input.
+    """
+    parse_listener_addr(socks)
+    if http:
+        parse_listener_addr(http)
+        if listeners_conflict(socks, http):
+            raise AppError("The SOCKS5 and HTTP listeners must use different ports.")
+        return socks, http
+    return socks, None
+
+
+def _listeners_from_json(data: Any) -> Listeners:
+    """Read the optional ``listeners`` object from a store payload.
+
+    Absent in stores written before listeners were persisted; absence means the
+    loopback defaults, not an error.
+    """
+    if data is None:
+        return Listeners()
+    if not isinstance(data, dict):
+        raise AppError("profiles file has an invalid listeners entry: expected an object.")
+    socks = data.get("socks", DEFAULT_SOCKS_ADDR)
+    http = data.get("http", DEFAULT_HTTP_ADDR)
+    if not isinstance(socks, str) or (http is not None and not isinstance(http, str)):
+        raise AppError("profiles file has an invalid listeners entry: bad address type.")
+    if http == "":
+        http = None
+    try:
+        socks, http = validate_listeners(socks, http)
+    except AppError:
+        raise AppError("profiles file has an invalid listeners entry: bad address.") from None
+    return Listeners(socks=socks, http=http)
 
 
 @dataclass(frozen=True)
@@ -280,6 +345,25 @@ class ProfileStore:
         # currently imports zero nodes leaves no profile behind -- and that is
         # precisely the one a refresh should still retry.
         self._subscriptions: list[str] = []
+        # Local proxy listen addresses. Persisted so a change made in the TUI
+        # survives a restart; defaults are loopback (see DEFAULT_* above).
+        self._listeners = Listeners()
+
+    @property
+    def listeners(self) -> Listeners:
+        """The persisted local proxy listen addresses."""
+        return self._listeners
+
+    def set_listeners(self, socks: str, http: str | None) -> Listeners:
+        """Replace the local listen addresses, validating before storing.
+
+        Does not save; the caller decides when to persist (the TUI saves after a
+        live apply succeeds, so a store write cannot claim a change that never
+        bound).
+        """
+        socks, http = validate_listeners(socks, http)
+        self._listeners = Listeners(socks=socks, http=http)
+        return self._listeners
 
     @property
     def subscriptions(self) -> list[str]:
@@ -354,6 +438,8 @@ class ProfileStore:
         ):
             raise AppError("profiles file is malformed: subscriptions must be a list of names.")
         self._subscriptions = list(dict.fromkeys(subscriptions_raw))
+        # Absent in stores written before this existed; absence means loopback.
+        self._listeners = _listeners_from_json(data.get("listeners"))
 
     def save(self) -> None:
         """Persist state atomically with 0700 dir / 0600 file permissions."""
@@ -371,6 +457,7 @@ class ProfileStore:
             "active": self._active_id,
             "profiles": [_profile_to_json(p) for p in self._profiles.values()],
             "subscriptions": list(self._subscriptions),
+            "listeners": self._listeners.as_dict(),
         }
         try:
             text = json.dumps(payload, indent=2, sort_keys=True)
@@ -732,9 +819,12 @@ class ProfileStore:
 __all__ = [
     "STORE_VERSION",
     "APP_NAME",
+    "DEFAULT_HTTP_ADDR",
+    "DEFAULT_SOCKS_ADDR",
     "DEFAULT_STORE_PATH",
     "SUB_SECRET_PREFIX",
     "SUB_SOURCE_PREFIX",
+    "Listeners",
     "ParsedNode",
     "Profile",
     "ProfileStore",
@@ -742,4 +832,5 @@ __all__ = [
     "app_data_dir",
     "node_identity",
     "resolve_link",
+    "validate_listeners",
 ]

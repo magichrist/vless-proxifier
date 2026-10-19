@@ -495,6 +495,28 @@ class XrayProcess:
         return self._process is not None and self._process.poll() is None
 
     @property
+    def socks_addr(self) -> str:
+        """The SOCKS5 address the next ``apply`` will bind."""
+        return self._socks_addr
+
+    @property
+    def http_addr(self) -> str | None:
+        """The HTTP address the next ``apply`` will bind, or None when disabled."""
+        return self._http_addr
+
+    def set_listeners(self, *, socks_addr: str, http_addr: str | None) -> None:
+        """Change the addresses the *next* ``apply`` will bind.
+
+        A running process keeps its current listeners until ``apply`` is called
+        again, so the caller (``ProxyService``) owns the re-apply. Addresses are
+        validated by ``build_xray_config`` at apply time, not here, so a rejected
+        address cannot leave the supervisor holding something it cannot bind.
+        """
+        with self._lock:
+            self._socks_addr = socks_addr
+            self._http_addr = http_addr
+
+    @property
     def last_log(self) -> str:
         """The redacted tail of the current process's output, for a log pane.
 

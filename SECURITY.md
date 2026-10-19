@@ -100,8 +100,10 @@ xattr -dr com.apple.quarantine xray-macos-arm64/
 
 Each of these is asserted by a test, not just described here.
 
-- **Loopback-only listeners.** `build_xray_config` refuses any address that is not a
-  loopback IP, so `--socks 0.0.0.0:10808` is an error rather than a silent exposure.
+- **Listeners are IP literals, loopback by default.** `build_xray_config` refuses a hostname,
+  because it could resolve somewhere different at spawn time than the text the user read. The
+  default is `127.0.0.1`; binding wider (`0.0.0.0`, a LAN address) is allowed but is a deliberate
+  exposure — the UI warns inline, and the flag or dialog is the opt-in.
 - **TLS verification on by default.** A link carrying `insecure=1` is refused unless you
   pass `--allow-insecure`, and certificate pinning (`pcs`) is refused in combination with
   disabled verification.

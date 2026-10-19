@@ -126,6 +126,33 @@ class ProxyService:
             self._xray.stop()
             self._current_id = None
 
+    def set_listeners(self, *, socks_addr: str, http_addr: str | None) -> bool:
+        """Point the local proxy at new listen addresses.
+
+        Returns ``True`` when a live tunnel was restarted onto the new
+        addresses, ``False`` when nothing was running (the change then applies
+        on the next connect).
+
+        The restart reuses ``XrayProcess.apply``, so it keeps the D7 ordering
+        every other switch uses: the new config is validated before the running
+        process is stopped, and a rejected address leaves the current tunnel
+        serving. The supervisor's addresses are rolled back on failure so the
+        status bar cannot claim ports the live process is not on.
+        """
+        with self._lock:
+            previous = (self._xray.socks_addr, self._xray.http_addr)
+            self._xray.set_listeners(socks_addr=socks_addr, http_addr=http_addr)
+            if not self.running or self._current_id is None:
+                return False
+            profile = self._store.get(self._current_id)
+            link: dict[str, Any] = resolve_link(profile, self._secrets)
+            try:
+                self._xray.apply(link)
+            except BaseException:
+                self._xray.set_listeners(socks_addr=previous[0], http_addr=previous[1])
+                raise
+            return True
+
     def connect_active(self) -> Profile | None:
         """Reconnect the last-active profile, or None when none is recorded.
 

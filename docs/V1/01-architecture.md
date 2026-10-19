@@ -102,6 +102,7 @@ This is the interface D3 deliberately isolates. The TUI never talks to Xray.
 class XrayProcess:
     def __init__(self, xray_path: Path, *, socks_addr: str, http_addr: str | None) -> None: ...
     def apply(self, link: dict[str, Any]) -> None: ...
+    def set_listeners(self, *, socks_addr: str, http_addr: str | None) -> None: ...
     def stop(self) -> None: ...
     @property
     def running(self) -> bool: ...
@@ -109,9 +110,11 @@ class XrayProcess:
     def last_log(self) -> str: ...
 ```
 
-Listener addresses are fixed at construction, so `apply` takes only the link to switch to. That
-keeps the call site to one argument and means a misconfigured port cannot be introduced at
-switch time.
+Listener addresses are set at construction (or by `set_listeners`) and bind on the next `apply`,
+so switching profiles still takes only the link. `set_listeners` is what the TUI's `p` dialog
+uses: `ProxyService.set_listeners` reconfigures the supervisor and, if a tunnel is up, re-applies
+the active profile so the new ports bind — through the same validate-before-stop ordering as any
+other switch, with the addresses rolled back if the new config is rejected.
 
 `apply` performs D7's ordered switch and raises `AppError` on failure. Today it is implemented by
 regenerating the config and respawning. A future hot-swap implementation satisfies the same

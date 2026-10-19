@@ -61,10 +61,17 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(AppError):
             parse_vless_uri(link, allow_insecure=True)
 
-    def test_remote_listeners_are_rejected(self):
+    def test_wildcard_listener_is_accepted(self):
+        # Binding beyond loopback is a deliberate opt-in (the proxy is
+        # unauthenticated, so the UI warns), not an error.
+        parsed = parse_vless_uri(LINK)
+        config = build_xray_config(parsed, "0.0.0.0:10808", None)
+        self.assertEqual(config["inbounds"][0]["listen"], "0.0.0.0")
+
+    def test_hostname_listener_is_rejected(self):
         parsed = parse_vless_uri(LINK)
         with self.assertRaises(AppError):
-            build_xray_config(parsed, "0.0.0.0:10808", None)
+            build_xray_config(parsed, "example.com:10808", None)
 
     def test_reality_fields(self):
         key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="

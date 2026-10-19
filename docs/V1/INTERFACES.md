@@ -118,6 +118,9 @@ class ProfileStore:
     @property
     def active_id(self) -> str | None: ...
     def set_active(self, profile_id: str) -> None: ...
+    @property
+    def listeners(self) -> Listeners: ...   # local SOCKS5/HTTP addresses
+    def set_listeners(self, socks: str, http: str | None) -> Listeners: ...
 ```
 
 `add`/`update` MUST raise `AppError` if `link` contains a `uuid` key. Defence in depth against a
@@ -166,6 +169,10 @@ class ProxyService:
     def connect(self, ref: str) -> Profile: ...     # full D7 switch; raises AppError
     def disconnect(self) -> None: ...
     def connect_active(self) -> Profile | None: ... # reconnect last active on launch
+    def set_listeners(self, *, socks_addr: str,
+                      http_addr: str | None) -> bool:
+        """Reconfigure the local listeners; restart the live tunnel if any.
+        Returns True when a running tunnel was restarted onto the new ports."""
     def probe_all(self, on_result: Callable[[str, int | None], None],
                   *, timeout: float = 3.0) -> None:
         """Threads, one per profile. Calls on_result(profile_id, ms_or_None).

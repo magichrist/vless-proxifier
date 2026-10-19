@@ -116,7 +116,7 @@ after `q`.
 | `xray`, `ProxyService` | Fake Xray binary script; assert argv and process count |
 | `latency` | Closed port → `None`; bound port → int |
 | `tui` | `App.run_test()` for headless interaction |
-| Security invariants | Explicit tests for loopback-only, TLS verify, and **no UUID on disk** |
+| Security invariants | Explicit tests for IP-literal listeners, TLS verify, and **no UUID on disk** |
 
 Do not mock what you can substitute. A fake binary proves more than a mocked `Popen`.
 

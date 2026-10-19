@@ -12,6 +12,8 @@ from unittest import mock
 
 from vlessp.errors import AppError
 from vlessp.profiles import (
+    DEFAULT_HTTP_ADDR,
+    DEFAULT_SOCKS_ADDR,
     STORE_VERSION,
     SUB_SECRET_PREFIX,
     SUB_SOURCE_PREFIX,
@@ -20,6 +22,7 @@ from vlessp.profiles import (
     app_data_dir,
     node_identity,
     resolve_link,
+    validate_listeners,
 )
 from vlessp.secrets import NullSecretStore
 
@@ -900,6 +903,111 @@ class TestNodeIdentity(unittest.TestCase):
     def test_prefixes(self) -> None:
         self.assertEqual(SUB_SOURCE_PREFIX, "subscription:")
         self.assertEqual(SUB_SECRET_PREFIX, "subscription:")
+
+
+class TestListenerSettings(unittest.TestCase):
+    """The local proxy's listen addresses persist beside the profiles.
+
+    The TUI edits these, but the store owns the rule so the CLI, the app, and a
+    hand-edited ``profiles.json`` all agree on what a valid pair is.
+    """
+
+    def test_defaults_are_loopback(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.load()
+            self.assertEqual(store.listeners.socks, DEFAULT_SOCKS_ADDR)
+            self.assertEqual(store.listeners.http, DEFAULT_HTTP_ADDR)
+        finally:
+            tmp.cleanup()
+
+    def test_set_save_load_round_trips(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.load()
+            store.set_listeners("0.0.0.0:12080", "[::1]:12081")
+            store.save()
+
+            reloaded = ProfileStore(path=store.path)
+            reloaded.load()
+            self.assertEqual(reloaded.listeners.socks, "0.0.0.0:12080")
+            self.assertEqual(reloaded.listeners.http, "[::1]:12081")
+        finally:
+            tmp.cleanup()
+
+    def test_disabling_http_is_remembered(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.load()
+            store.set_listeners("127.0.0.1:10808", None)
+            store.save()
+
+            reloaded = ProfileStore(path=store.path)
+            reloaded.load()
+            self.assertIsNone(reloaded.listeners.http)
+        finally:
+            tmp.cleanup()
+
+    def test_a_bad_address_is_refused_without_changing_the_store(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.load()
+            for bad in ("not an ip", "127.0.0.1", "127.0.0.1:0", "example.com:443", "127.0.0.1:99999"):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(AppError):
+                        store.set_listeners(bad, None)
+            self.assertEqual(store.listeners.socks, DEFAULT_SOCKS_ADDR, "a refused change is not applied")
+        finally:
+            tmp.cleanup()
+
+    def test_identical_ports_are_refused(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.load()
+            with self.assertRaises(AppError):
+                store.set_listeners("127.0.0.1:10808", "0.0.0.0:10808")
+            self.assertEqual(store.listeners.http, DEFAULT_HTTP_ADDR)
+        finally:
+            tmp.cleanup()
+
+    def test_a_store_without_listeners_loads_the_defaults(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps({"version": STORE_VERSION, "active": None, "profiles": []}),
+                encoding="utf-8",
+            )
+            reloaded = ProfileStore(path=store.path)
+            reloaded.load()
+            self.assertEqual(reloaded.listeners.socks, DEFAULT_SOCKS_ADDR)
+            self.assertEqual(reloaded.listeners.http, DEFAULT_HTTP_ADDR)
+        finally:
+            tmp.cleanup()
+
+    def test_malformed_listeners_in_a_file_are_rejected(self) -> None:
+        store, tmp = make_store()
+        try:
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            for bad in ([], {"socks": "nonsense", "http": None}, {"socks": 10808, "http": None}):
+                with self.subTest(bad=bad):
+                    store.path.write_text(
+                        json.dumps(
+                            {"version": STORE_VERSION, "active": None, "profiles": [], "listeners": bad}
+                        ),
+                        encoding="utf-8",
+                    )
+                    reloaded = ProfileStore(path=store.path)
+                    with self.assertRaises(AppError):
+                        reloaded.load()
+        finally:
+            tmp.cleanup()
+
+    def test_validate_listeners_normalises_and_enforces_distinct_ports(self) -> None:
+        self.assertEqual(validate_listeners("127.0.0.1:1", "127.0.0.1:2"), ("127.0.0.1:1", "127.0.0.1:2"))
+        self.assertEqual(validate_listeners("127.0.0.1:1", None), ("127.0.0.1:1", None))
+        with self.assertRaises(AppError):
+            validate_listeners("127.0.0.1:1", "127.0.0.1:1")
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ from unittest import mock
 
 try:
     import textual  # noqa: F401
-    from textual.widgets import Button, Input, Select, Static
+    from textual.widgets import Button, Checkbox, Input, Select, Static
     from textual.widgets._select import InvalidSelectValueError
 
     from vlessp.profiles import SUB_SECRET_PREFIX, SUB_SOURCE_PREFIX
@@ -37,6 +37,7 @@ try:
         ConfirmScreen,
         EditProfileScreen,
         HelpScreen,
+        ListenersScreen,
         VlessApp,
     )
     from vlessp.tui.graphics import rgb
@@ -212,6 +213,12 @@ class StubProxyService:
         self.calls.append("disconnect")
         self._running = False
         self._current = None
+
+    def set_listeners(self, *, socks_addr: str, http_addr: str | None) -> bool:
+        self.calls.append(f"set_listeners:{socks_addr}:{http_addr}")
+        self.socks_addr = socks_addr
+        self.http_addr = http_addr
+        return self._running
 
     def connect_active(self) -> Profile | None:
         active = self._store.active_id
@@ -1249,6 +1256,125 @@ class TestAddressScreen(TuiTestCase):
         await self.pilot.pause()
         self.assertIn("Port", str(screen.query_one("#error", Static).render()))
         self.assertEqual(self.store.get(profile.id).link["port"], 2083)
+
+
+class TestListenersScreen(TuiTestCase):
+    """``p`` edits the *local* proxy's listen addresses, not the profile.
+
+    Kept deliberately separate from :class:`TestAddressScreen`: ``i`` edits the
+    remote server a tunnel dials, ``p`` edits where the tunnel is reachable here.
+    The tests below assert that separation, that a bad address never reaches the
+    service or the store, and that the app only reports ports once the service
+    accepted them.
+    """
+
+    async def test_p_opens_the_local_listener_form_prefilled(self) -> None:
+        await self.settle()
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        screen = self.app.screen
+        self.assertIsInstance(screen, ListenersScreen)
+        self.assertEqual(screen.query_one("#socks-host", Input).value, "127.0.0.1")
+        self.assertEqual(screen.query_one("#socks-port", Input).value, "10808")
+        self.assertEqual(screen.query_one("#http-host", Input).value, "127.0.0.1")
+        self.assertEqual(screen.query_one("#http-port", Input).value, "10809")
+
+    async def test_saving_new_ports_applies_and_persists_them(self) -> None:
+        await self.settle()
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, ListenersScreen)
+
+        screen.query_one("#socks-port", Input).value = "12080"
+        screen.query_one("#http-port", Input).value = "12081"
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        # The service was handed the new addresses...
+        self.assertIn("set_listeners:127.0.0.1:12080:127.0.0.1:12081", self.service.calls)
+        # ...the store remembers them for next launch...
+        self.assertEqual(self.store.listeners.socks, "127.0.0.1:12080")
+        self.assertEqual(self.store.listeners.http, "127.0.0.1:12081")
+        # ...and the status bar shows what is now bound.
+        rendered = str(self.app.query_one(StatusBar).render())
+        self.assertIn("127.0.0.1:12080", rendered)
+        self.assertIn("127.0.0.1:12081", rendered)
+
+    async def test_disabling_http_drops_the_http_listener(self) -> None:
+        await self.settle()
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, ListenersScreen)
+
+        screen.query_one("#http-on", Checkbox).value = False
+        await self.pilot.pause()
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertIn("set_listeners:127.0.0.1:10808:None", self.service.calls)
+        self.assertIsNone(self.store.listeners.http)
+        self.assertNotIn("HTTP", str(self.app.query_one(StatusBar).render()))
+        self.assertTrue(any("HTTP off" in note for note in self.app._notes), self.app._notes)
+
+    async def test_an_invalid_address_is_refused_before_the_service(self) -> None:
+        await self.settle()
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, ListenersScreen)
+
+        screen.query_one("#socks-host", Input).value = "not an ip"
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertIn("IP address", str(screen.query_one("#error", Static).render()))
+        self.assertIsInstance(self.app.screen, ListenersScreen, "a refused save must not close the dialog")
+        self.assertFalse(any(c.startswith("set_listeners") for c in self.service.calls))
+        self.assertEqual(self.store.listeners.socks, "127.0.0.1:10808")
+
+    async def test_identical_ports_are_refused(self) -> None:
+        await self.settle()
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, ListenersScreen)
+
+        screen.query_one("#http-port", Input).value = "10808"
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertIn("different ports", str(screen.query_one("#error", Static).render()))
+        self.assertFalse(any(c.startswith("set_listeners") for c in self.service.calls))
+
+    async def test_a_live_tunnel_is_reported_as_restarted(self) -> None:
+        await self.settle()
+        self.service._running = True  # the stub then reports a restart happened
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        screen = self.app.screen
+        assert isinstance(screen, ListenersScreen)
+
+        screen.query_one("#socks-port", Input).value = "12080"
+        screen.query_one("#save", Button).press()
+        await self.settle()
+        await self.pilot.pause()
+
+        self.assertTrue(any("restarted" in note for note in self.app._notes), self.app._notes)
+
+    async def test_a_service_without_set_listeners_is_reported_not_crashed(self) -> None:
+        await self.settle()
+        # A stub service built before this feature has no ``set_listeners``; the
+        # action must say so rather than open a dialog whose Save then explodes.
+        self.service.set_listeners = None  # type: ignore[method-assign]
+        await self.pilot.press("p")
+        await self.pilot.pause()
+        self.assertNotIsInstance(self.app.screen, ListenersScreen)
 
 
 class TestSubscriptions(TuiTestCase):

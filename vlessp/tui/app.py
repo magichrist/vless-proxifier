@@ -49,6 +49,7 @@ from vlessp.errors import AppError
 from vlessp.profiles import (
     SUB_SECRET_PREFIX,
     SUB_SOURCE_PREFIX,
+    Listeners,
     ProfileStore,
 )
 from vlessp.subscriptions import fetch_subscription, parse
@@ -59,6 +60,7 @@ from vlessp.tui.screens import (
     ConfirmScreen,
     EditProfileScreen,
     HelpScreen,
+    ListenersScreen,
 )
 from vlessp.tui.theme import DEFAULT_THEME_NAME, apply_theme, next_theme, register_all
 from vlessp.tui.widgets import (
@@ -84,11 +86,10 @@ RESORT_EVERY = 1
 # Probe timeout, passed through to ``ProxyService.probe_all``.
 PROBE_TIMEOUT = 3.0
 
-# Fallback listener addresses, matching ``ProxyService``'s own constructor
-# defaults. Used only when neither the app nor the service supplies a value —
-# see the note on ``VlessApp.__init__`` about the seam not exposing them.
-DEFAULT_SOCKS_ADDR = "127.0.0.1:10808"
-DEFAULT_HTTP_ADDR = "127.0.0.1:10809"
+# Fallback listener addresses now come from ``ProfileStore.listeners`` (which
+# itself defaults to loopback — see ``vlessp.profiles``). There is no constant
+# here: two sources for "the default port" is exactly how a status bar ends up
+# showing something the service is not bound to.
 
 # Log pane refresh cadence. Slow enough to be free, fast enough that a failed
 # switch is diagnosed without leaving the app.
@@ -287,6 +288,7 @@ class VlessApp(App[None]):
         Binding("s", "add_subscription", "Add sub"),
         Binding("e", "edit_profile", "Edit"),
         Binding("i", "edit_address", "IP/Port"),
+        Binding("p", "edit_listeners", "Local ports"),
         Binding("d", "delete_profile", "Delete"),
         # View and app.
         Binding("o", "toggle_log", "Output"),
@@ -340,9 +342,19 @@ class VlessApp(App[None]):
             secrets if secrets is not None else getattr(service, "secrets", None)
         )
         self._allow_insecure = allow_insecure
-        self._socks_addr = socks_addr or getattr(service, "socks_addr", None) or DEFAULT_SOCKS_ADDR
+        # Listener resolution order: an explicit argument, then the service (a
+        # stub or a future ProxyService that publishes them), then what the user
+        # saved in the UI. The store is the authority otherwise, so the header
+        # never disagrees with the ports the service is bound to.
+        self._socks_addr = (
+            socks_addr
+            or getattr(service, "socks_addr", None)
+            or store.listeners.socks
+        )
         if isinstance(http_addr, _Unset):
-            self._http_addr: str | None = getattr(service, "http_addr", None) or DEFAULT_HTTP_ADDR
+            self._http_addr: str | None = (
+                getattr(service, "http_addr", None) or store.listeners.http
+            )
         else:
             self._http_addr = http_addr or None
         self._xray_version = xray_version or getattr(service, "xray_version", None)
@@ -674,6 +686,85 @@ class VlessApp(App[None]):
             return
         profile = self._store.get(profile_id)
         self.push_screen(AddressScreen(self._store, profile), callback=self._on_profile_closed)
+
+    def action_edit_listeners(self) -> None:
+        """``p`` — edit the local SOCKS5/HTTP listen addresses and ports.
+
+        The internal counterpart to ``i``: ``i`` changes the remote server the
+        tunnel dials, this changes where the tunnel is reachable *here*. Nothing
+        about the profile or its UUID is involved, so this screen needs neither
+        the store's profiles nor the Keychain.
+        """
+        if not self._on_main_screen():
+            return
+        if not callable(getattr(self._service, "set_listeners", None)):
+            self.notify(
+                "This build cannot change the local listener addresses.",
+                severity="error",
+                markup=False,
+            )
+            return
+        self.push_screen(
+            ListenersScreen(socks=self._socks_addr, http=self._http_addr),
+            callback=self._on_listeners_closed,
+        )
+
+    def _on_listeners_closed(self, result: Listeners | None) -> None:
+        """Modal callback: ``None`` cancelled, otherwise apply and persist."""
+        if result is None:
+            return
+        self._begin_switch()
+        self._apply_listeners_worker(result)
+
+    @work(thread=True, exclusive=True, group="switch")
+    def _apply_listeners_worker(self, listeners: Listeners) -> None:
+        """Rebind the local proxy off the event loop.
+
+        Restarting the tunnel spawns a subprocess, so this cannot run on the
+        loop. ``set_listeners`` returns whether a live tunnel was restarted;
+        either way the app's own view of the ports only changes once this
+        succeeds, so the status bar never lies.
+        """
+        try:
+            restarted = self._service.set_listeners(
+                socks_addr=listeners.socks, http_addr=listeners.http
+            )
+        except Exception as exc:  # noqa: BLE001 — the worker must never leak to the loop
+            self.call_from_thread(self._listeners_failed, _safe_message(exc))
+            return
+        self.call_from_thread(self._listeners_applied, listeners, bool(restarted))
+
+    def _listeners_applied(self, listeners: Listeners, restarted: bool) -> None:
+        """Adopt the new ports and persist them. Runs on the event loop."""
+        self._switching = False
+        self._last_error = None
+        self._socks_addr = listeners.socks
+        self._http_addr = listeners.http
+        # Persist after the apply so a store write cannot record a binding that
+        # never happened. A save failure is reported but not fatal: the new
+        # ports are live, they just will not survive a restart.
+        try:
+            self._store.set_listeners(listeners.socks, listeners.http)
+            self._store.save()
+        except AppError as exc:
+            self._note(f"could not save listener settings: {exc}")
+        http_note = f", HTTP {listeners.http}" if listeners.http else ", HTTP off"
+        summary = f"SOCKS {listeners.socks}{http_note}"
+        if restarted:
+            self._note(f"tunnel restarted on {summary}")
+            self.notify(f"Restarted on {summary}", severity="information", markup=False)
+        else:
+            self._note(f"listeners set to {summary}")
+            self.notify(f"Listeners set to {summary}", severity="information", markup=False)
+        self._refresh_status()
+
+    def _listeners_failed(self, message: str) -> None:
+        """Report a failed listener change; the ports are left untouched."""
+        self._switching = False
+        self._last_error = message
+        self.notify(message, title="Listener change failed", severity="error", markup=False)
+        self._note(f"error: {message}")
+        self._refresh_status()
 
     def action_add_subscription(self) -> None:
         """``s`` — add a subscription URL, then import its nodes.

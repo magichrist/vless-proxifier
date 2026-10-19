@@ -776,7 +776,7 @@ class KeyHints(Static):
     scarce vertical space on chrome — the table is what the user came for.
 
     The line adapts to the terminal rather than picking one compromise layout.
-    Twelve keys with readable labels need 138 columns, which most terminals do
+    Thirteen keys with readable labels need 154 columns, which most terminals do
     not have; a fixed choice is either too cramped to read or too wide to fit.
     So three tiers are defined, longest first, and the widest one that fits is
     used. A test measures every tier against the width that selects it, so a
@@ -806,30 +806,30 @@ class KeyHints(Static):
     #: Terminal width below which each tier is used. The first tier whose
     #: requirement is <= the available width wins, so these are minimums.
     #: Measured from the rendered strings, not estimated — see the test.
-    WIDE_MIN = 138
-    MEDIUM_MIN = 128
-    NARROW_MIN = 80
+    WIDE_MIN = 154
+    MEDIUM_MIN = 138
+    NARROW_MIN = 88
 
     #: (keys, labels, separator) per tier. Narrow uses colon separators and
     #: abbreviated keys ("sp", "^T") because at 80 columns those three
     #: characters are the difference between fitting and hiding `q`.
     TIERS: tuple[tuple[list[str], list[str], str], ...] = (
         (
-            ["c", "space", "t", "l", "s", "e", "i", "d", "o", "alt+t", "h", "q"],
+            ["c", "space", "t", "l", "s", "e", "i", "p", "d", "o", "alt+t", "h", "q"],
             ["connect", "stop/resume", "test", "add link", "add sub", "edit",
-             "ip/port", "delete", "output", "theme", "help", "quit"],
+             "ip/port", "local ports", "delete", "output", "theme", "help", "quit"],
             " · ",
         ),
         (
-            ["c", "space", "t", "l", "s", "e", "i", "d", "o", "alt+t", "h", "q"],
+            ["c", "space", "t", "l", "s", "e", "i", "p", "d", "o", "alt+t", "h", "q"],
             ["conn", "stop", "test", "add link", "add sub", "edit",
-             "ip/port", "delete", "output", "theme", "help", "quit"],
+             "ip/port", "ports", "delete", "output", "theme", "help", "quit"],
             " · ",
         ),
         (
-            ["c", "sp", "t", "l", "s", "e", "i", "d", "o", "^T", "h", "q"],
+            ["c", "sp", "t", "l", "s", "e", "i", "p", "d", "o", "^T", "h", "q"],
             ["conn", "stop", "test", "add", "sub", "edit",
-             "ip", "del", "out", "theme", "help", "quit"],
+             "ip", "ports", "del", "out", "theme", "help", "quit"],
             " ",
         ),
         # Floor: keys only, no labels. For a terminal narrower than the narrow
@@ -837,14 +837,14 @@ class KeyHints(Static):
         # description is still pressable and still honest about what exists,
         # whereas a truncated line silently hides keys the user cannot find.
         (
-            ["c", "space", "t", "l", "s", "e", "i", "d", "o", "alt+t", "h", "q"],
-            [""] * 12,
+            ["c", "space", "t", "l", "s", "e", "i", "p", "d", "o", "alt+t", "h", "q"],
+            [""] * 13,
             " ",
         ),
     )
 
     #: Minimum width each tier needs, matching ``TIERS`` order.
-    MINIMUMS = (138, 128, 80, 33)
+    MINIMUMS = (154, 138, 88, 33)
 
     #: Tiers that join key and label with a colon rather than a space.
     COLON_TIERS = frozenset({2})
