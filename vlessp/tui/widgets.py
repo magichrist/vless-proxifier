@@ -496,6 +496,10 @@ class KeyHints(Static):
 
     DEFAULT_CSS = """
     KeyHints {
+        /* Lives in the footer strip (see VlessApp.compose), not the flow. The
+           hints are chrome: in the flow they drifted up the screen whenever the
+           list was short, so the same keys sat in a different place on every
+           screen. One row, always, directly above the status bar. */
         height: 1;
         padding: 0 1;
         color: $text-muted;

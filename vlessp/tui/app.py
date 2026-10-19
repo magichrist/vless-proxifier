@@ -41,6 +41,7 @@ from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.widgets import Header, Static
 
 from vlessp import APP_NAME
@@ -91,12 +92,12 @@ LOG_REFRESH_SECONDS = 1.0
 # service, not here.
 MAX_LOG_NOTES = 200
 
-# Fixed chrome under the table, in rows, used to size it. The header and the
-# status bar are one row each; the key hints one; the detail band DETAIL_HEIGHT;
+# Fixed chrome around the table, in rows, used to size it. The header is one row;
+# the footer two (key hints, then the status bar); the detail band DETAIL_HEIGHT;
 # the log pane twelve when it is shown. The table is capped at whatever is left,
 # so a long list scrolls instead of pushing the panels off-screen.
-CHROME_ROWS = 2  # header + status bar
-HINTS_ROWS = 1
+HEADER_ROWS = 1
+FOOTER_ROWS = 2  # key hints + status bar
 LOG_PANE_ROWS = 12
 MIN_TABLE_ROWS = 3
 
@@ -137,6 +138,10 @@ class VlessApp(App[None]):
     CSS = """
     Screen {
         layers: base;
+    }
+    #footer {
+        dock: bottom;
+        height: 2;
     }
     #log-pane {
         height: 12;
@@ -255,17 +260,22 @@ class VlessApp(App[None]):
         yield ProfileTable(id="profiles")
         # Detail directly under the table it describes. With the table now hugging
         # its rows (see ProfileTable.CSS) the panel reads as attached to the data
-        # rather than stranded at the bottom below the key hints. The log pane is a
-        # diagnostic surface that is hidden by default, so this is the only
-        # always-visible readout.
+        # rather than stranded at the bottom. The log pane is a diagnostic surface
+        # that is hidden by default, so this is the only always-visible readout.
         yield ProfileDetail(id="detail")
-        # The key hints go directly under the table, where the eye already is,
-        # rather than in the footer slot at the very bottom. Textual's Footer is
-        # gone on purpose: twelve bindings do not fit one un-wrapped line, and it
-        # was silently truncating them — hiding `q` along the way.
-        yield KeyHints()
         yield Static("", id="log-pane")
-        yield StatusBar(id="status")
+        # Hints and status share one footer strip. Pinned, not in the flow: as
+        # flow children they drifted up the screen on a short list, so the keys
+        # moved every time the row count changed. Both dock to the same edge, and
+        # Textual does not stack same-edge docks, so the strip owns the two rows
+        # and the contents stack inside it.
+        #
+        # Textual's own Footer remains gone on purpose: twelve bindings do not fit
+        # one un-wrapped line, and it was silently truncating them — hiding `q`
+        # along the way. KeyHints says the same thing without lying about fit.
+        with Vertical(id="footer"):
+            yield KeyHints()
+            yield StatusBar(id="status")
 
     def on_mount(self) -> None:
         # Themes register here rather than lazily inside the key handler: the
@@ -306,7 +316,7 @@ class VlessApp(App[None]):
             height = self.size.height
         if height <= 0:
             return  # before the first layout there is nothing to divide up
-        reserved = CHROME_ROWS + HINTS_ROWS + DETAIL_HEIGHT
+        reserved = HEADER_ROWS + FOOTER_ROWS + DETAIL_HEIGHT
         if self.query_one("#log-pane", Static).display:
             reserved += LOG_PANE_ROWS
         self.query_one(ProfileTable).styles.max_height = max(

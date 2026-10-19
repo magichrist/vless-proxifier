@@ -385,6 +385,22 @@ class TestTableSizing(TuiTestCase):
         self.assertTrue(self.app.query_one("#log-pane").display)
         self.assertGreaterEqual(self.table().region.height, 3)
 
+    async def test_the_key_hints_are_pinned_to_the_footer(self) -> None:
+        """The hints are chrome: their row must not move with the row count.
+
+        Held as flow children they drifted up the screen whenever the list was
+        short, so the same keys sat in a different place from one screen to the
+        next. Pinned, they stay directly above the status bar.
+        """
+        await self.settle()
+        self.add_profile("alpha")
+        self.app._reload_table()
+        await self.settle()
+        hints = self.app.query_one(KeyHints)
+        status = self.app.query_one(StatusBar)
+        self.assertEqual(hints.region.y + hints.region.height, status.region.y)
+        self.assertEqual(status.region.y + status.region.height, self.app.size.height)
+
     async def test_resizing_recomputes_the_cap(self) -> None:
         await self.settle()
         for index in range(60):

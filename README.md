@@ -78,7 +78,7 @@ keeps working. Both are aliases and are not advertised in the key hints — `h` 
 
 ### The key hints
 
-One line, under the table, every key:
+One line, pinned above the status bar, every key:
 
 ```
 c connect · space stop/resume · t test · l add link · s add sub · e edit · i ip/port · d delete · o output · alt+t theme · h help · q quit
