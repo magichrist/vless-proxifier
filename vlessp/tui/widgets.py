@@ -101,9 +101,26 @@ COL_STATE = 6
 
 CSS = """
 ProfileTable {
-    height: 1fr;
+    /* Hug the rows instead of eating the whole screen. With a handful of
+       profiles a 1fr table drew twenty rows of empty background and pushed the
+       detail panel and key hints to the very bottom, far from the data.
+
+       ``auto`` alone would overflow a long list and shove the panels below it
+       off-screen, so the ceiling is applied in *rows* at runtime
+       (``VlessApp._fit_table_height``): ``max-height`` cannot express "the space
+       left after the widgets below me", and both ``1fr`` and a percentage cap
+       get that wrong. The app knows the terminal height and the chrome heights,
+       so it computes the number the layout engine cannot. */
+    height: auto;
 }
 """
+
+#: Rows the detail panel occupies: one border rule plus three content lines.
+#: Fixed so the table above it has a predictable height to reserve, and so the
+#: panel does not jump between a profile with a trend and one without. Kept here
+#: rather than inline in the CSS so ``VlessApp._fit_table_height`` subtracts the
+#: same number the stylesheet uses.
+DETAIL_HEIGHT = 4
 
 
 def format_latency(latency_ms: int | None) -> str:
@@ -312,7 +329,7 @@ class ProfileTable(DataTable):
                 Text(str(link.get("security", "")), style=style),
                 Text(str(link.get("network", "")), style=style),
                 self._latency_cell(profile, style),
-                Text(self._state_cell(profile), style=style),
+                self._state_text(profile, style),
                 key=profile.id,
             )
         self._restore_cursor(previous_row)
@@ -351,7 +368,9 @@ class ProfileTable(DataTable):
         """
         label = profile.label or DASH
         if profile.id == self._active_id:
-            label = f"{ACTIVE_MARK}{label}"
+            # A space after the bar: ``▌home`` reads as one token, ``▌ home``
+            # reads as "this row is marked, and the label is home".
+            label = f"{ACTIVE_MARK} {label}"
         cell = Text(label, style=UNAVAILABLE_STYLE if profile.unavailable else "")
         badge = format_source(profile.source)
         if badge:
@@ -360,18 +379,25 @@ class ProfileTable(DataTable):
             cell.append(f" {badge}")
         return cell
 
-    def _state_cell(self, profile: Profile) -> str:
-        """``live`` for the connected profile, ``gone`` for an unlisted one.
+    def _state_text(self, profile: Profile, style: str = "") -> Text:
+        """STATE cell as a styled Text: ``live`` / ``gone`` / ``—``.
 
         ``live`` wins over ``gone``: a node carrying traffic right now is
         carrying it, and the dim styling still tells the user it is no longer
         offered upstream. Every other row reads ``—``, which is "idle".
+
+        Only ``live`` gets its own colour. A ``gone`` row stays uniformly dimmed
+        like the rest of its cells: the *word* is what distinguishes it, so it
+        survives a monochrome terminal, and a lone yellow cell under a dim row
+        read as a second, competing signal.
         """
         if profile.id == self._current_id:
-            return LIVE_MARK
-        if profile.unavailable:
-            return UNAVAILABLE_MARK
-        return DASH
+            text = Text(LIVE_MARK, style="bold green")
+            if style:
+                text.stylize(style)
+            return text
+        mark = UNAVAILABLE_MARK if profile.unavailable else DASH
+        return Text(mark, style=style)
 
     def selected_id(self) -> str | None:
         """Profile id under the cursor, or ``None`` on an empty table."""
@@ -435,7 +461,13 @@ class StatusBar(Static):
         if xray_version:
             parts.append(f"xray {xray_version}")
         text = Text("   ".join(parts) if parts else "no proxy configured")
-        text.append("   " + ("running" if running else "stopped"))
+        # Same wording and casing as the header's state word, so the two surfaces
+        # do not describe the same service with different vocabularies.
+        if running:
+            text.append("   ")
+            text.append("RUNNING", style="bold green")
+        else:
+            text.append("   STOPPED")
         self.update(text)
         self.set_class(not running, "stopped")
 
@@ -576,8 +608,16 @@ class ProfileDetail(Static):
 
     DEFAULT_CSS = """
     ProfileDetail {
-        height: auto;
+        /* A fixed band: one border rule plus three content lines (identity /
+           trend / stats). Fixed rather than ``auto`` for two reasons. It gives
+           the table above a height to reserve against, so a long list can never
+           push the panel off-screen; and the panel does not change size as the
+           cursor moves between a profile with a trend and one without, so the
+           table never jumps under the reader's eye. Kept in step with
+           :data:`DETAIL_HEIGHT`, which the app subtracts when sizing the table. */
+        height: 4;
         padding: 0 1;
+        border-top: solid $panel;
     }
     ProfileDetail .spark {
         height: 1;
@@ -593,10 +633,19 @@ class ProfileDetail(Static):
     SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
     def show_profile(self, profile: Profile | None) -> None:
-        """Render ``profile``, or a hint when nothing is selected."""
+        """Render ``profile``, or a hint when nothing is selected.
+
+        The empty branch builds a plain ``Text`` and marks the *widget* with the
+        ``empty`` class. It must not pass ``classes=`` to ``Text`` — that keyword
+        belongs to widget construction, not Rich text, and raising it here (inside
+        a refresh path that swallows exceptions) silently blanked the panel
+        whenever no row was selected.
+        """
         if profile is None:
-            self.update(Text("No profile selected.", classes="empty"))
+            self.set_class(True, "empty")
+            self.update(Text("No profile selected — press l to add a link."))
             return
+        self.set_class(False, "empty")
         # Named _build, not _render: Static already has an internal _render with
         # a different signature, and shadowing it breaks the widget.
         self.update(self._build(profile))
@@ -636,6 +685,11 @@ class ProfileDetail(Static):
                 f"   max {max(measured)}ms",
                 style="dim",
             )
+            # The bar height is otherwise unanchored: a reader cannot tell whether
+            # a tall glyph means 90 ms or 900 ms without the scale it is drawn to.
+            # It is logarithmic (see ``latency_bar``), and saying so matters —
+            # "0–2000ms" alone would read as a linear axis and make the bars lie.
+            out.append(f"   ·   log scale 0–{LATENCY_SCALE_MAX}ms", style="dim")
         return out
 
 
@@ -672,6 +726,7 @@ def _sparkline(history: Sequence[int | None], *, width: int) -> tuple[Text, int]
 __all__ = [
     "ACTIVE_MARK",
     "DASH",
+    "DETAIL_HEIGHT",
     "LATENCY_SCALE_MAX",
     "LAT_BAR_WIDTH",
     "LIVE_MARK",

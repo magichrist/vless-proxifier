@@ -43,6 +43,7 @@ try:
     from vlessp.tui.theme import DEFAULT_THEME_NAME, THEME_ORDER, THEMES
     from vlessp.tui.widgets import (
         DASH,
+        DETAIL_HEIGHT,
         PARTIAL_BLOCKS,
         KeyHints,
         ProfileDetail,
@@ -181,7 +182,13 @@ class StubProxyService:
         try:
             gate = self.connect_gate
             if gate is not None:
-                gate.wait(timeout=5.0)
+                # Generous on purpose. The parked-connect tests assert the switch
+                # guard is still held after a few ``pilot.pause()`` calls, and a
+                # 5-second timeout expired first whenever the event loop was slow
+                # — the worker finished, the guard cleared, and the test failed
+                # for a reason that had nothing to do with the guard. The test
+                # always sets the gate, so this only bounds a hung run.
+                gate.wait(timeout=30.0)
             self.connect_calls += 1
             self.calls.append(f"connect:{ref}")
             if self.fail_connect is not None:
@@ -297,10 +304,11 @@ class TestMount(TuiTestCase):
         # Alphabetical, not insertion order.
         first = self.table().row_values(alpha.id)
         assert first is not None
-        self.assertEqual(first[0], "▌alpha" if alpha.id == beta.id else "alpha")
+        self.assertEqual(first[0], "▌ alpha" if alpha.id == beta.id else "alpha")
         second = self.table().row_values(beta.id)
         assert second is not None
-        self.assertTrue(second[0].startswith("▌"), "the active row carries the ▌ marker")
+        # Marker, then a space, then the label: ``▌ beta`` not ``▌beta``.
+        self.assertEqual(second[0], f"▌ {beta.label}")
         self.assertIn("2 profiles", self.app.sub_title)
 
     async def test_unprofiled_latency_renders_as_a_dash(self) -> None:
@@ -323,6 +331,87 @@ class TestMount(TuiTestCase):
         self.assertIn("127.0.0.1:10809", rendered)
         self.assertIn("25.1.3", rendered)
         self.assertTrue(status.has_class("stopped"))
+
+
+class TestTableSizing(TuiTestCase):
+    """The profile table hugs its rows but never squeezes the panels below it.
+
+    Regression, in two directions. As ``1fr`` the table drew a screen of empty
+    background under a short list, stranding the detail panel and key hints at
+    the very bottom; as ``auto`` a long list overflowed and pushed them off the
+    bottom edge entirely. The height is now capped at the rows left after the
+    chrome below the table, so both cases hold.
+    """
+
+    async def test_a_short_list_hugs_its_rows(self) -> None:
+        await self.settle()
+        for name in ("alpha", "beta", "gamma"):
+            self.add_profile(name)
+        self.app._reload_table()
+        await self.settle()
+        # One row per profile, plus the header row.
+        self.assertEqual(self.table().region.height, 3 + 1)
+
+    async def test_a_long_list_is_capped_and_the_panels_stay_on_screen(self) -> None:
+        await self.settle()
+        for index in range(60):
+            self.add_profile(f"node-{index:02d}")
+        self.app._reload_table()
+        await self.settle()
+
+        table = self.table()
+        detail = self.app.query_one("#detail", ProfileDetail)
+        hints = self.app.query_one(KeyHints)
+        self.assertLess(
+            table.region.height,
+            table.row_count + 1,
+            "a list taller than the screen must be capped, not drawn in full",
+        )
+        self.assertEqual(detail.region.height, DETAIL_HEIGHT)
+        # Detail above hints, hints above the bottom edge: nothing clipped.
+        self.assertLessEqual(detail.region.y + DETAIL_HEIGHT, hints.region.y)
+        self.assertLessEqual(hints.region.y + hints.region.height, self.app.size.height)
+
+    async def test_opening_the_log_pane_leaves_a_usable_table(self) -> None:
+        """The pane steals rows; the table keeps enough to stay navigable."""
+        await self.settle()
+        for index in range(60):
+            self.add_profile(f"node-{index:02d}")
+        self.app._reload_table()
+        await self.settle()
+
+        await self.pilot.press("o")
+        await self.settle()
+        self.assertTrue(self.app.query_one("#log-pane").display)
+        self.assertGreaterEqual(self.table().region.height, 3)
+
+    async def test_resizing_recomputes_the_cap(self) -> None:
+        await self.settle()
+        for index in range(60):
+            self.add_profile(f"node-{index:02d}")
+        self.app._reload_table()
+        await self.settle()
+
+        tall = self.table().region.height
+        await self.pilot.resize_terminal(80, 14)
+        await self.settle()
+        short = self.table().region.height
+        self.assertLess(short, tall, "a shorter terminal must yield a shorter table")
+        self.assertGreaterEqual(short, 3)
+        # The panels below are still visible at the new size.
+        detail = self.app.query_one("#detail", ProfileDetail)
+        hints = self.app.query_one(KeyHints)
+        self.assertLessEqual(detail.region.y + DETAIL_HEIGHT, hints.region.y)
+        self.assertLessEqual(hints.region.y + hints.region.height, self.app.size.height)
+
+    def test_the_detail_band_is_exactly_the_height_the_app_reserves(self) -> None:
+        """The CSS literal and ``DETAIL_HEIGHT`` must not drift apart.
+
+        Two places encode the same number because one is parsed as CSS and the
+        other is arithmetic. A mismatch would not crash — it would quietly clip
+        the panel or leave a blank row — so it is asserted here instead.
+        """
+        self.assertIn(f"height: {DETAIL_HEIGHT};", ProfileDetail.DEFAULT_CSS)
 
 
 class TestAddProfile(TuiTestCase):
@@ -1919,6 +2008,18 @@ class TestLatencyGraphics(TuiTestCase):
         self.app._reload_table()
         await self.settle()
         self.assertNotIn(TEST_UUID, str(self.app.query_one("#detail", ProfileDetail).render()))
+
+    async def test_the_panel_speaks_when_nothing_is_selected(self) -> None:
+        """Regression: ``Text(..., classes=...)`` is a TypeError.
+
+        ``classes`` is a widget keyword, not a Rich ``Text`` one. The empty
+        branch raised inside ``_refresh_detail``, whose ``except`` swallowed it,
+        so the panel silently went blank whenever no row was selected — which is
+        the first thing a new user sees, on an empty store.
+        """
+        await self.settle()
+        rendered = str(self.app.query_one("#detail", ProfileDetail).render())
+        self.assertIn("No profile selected", rendered)
 
 
 class TestLatencyGraphicsPure(unittest.TestCase):

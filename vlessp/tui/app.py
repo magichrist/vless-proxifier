@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Header, Static
@@ -56,7 +56,13 @@ from vlessp.tui.screens import (
     HelpScreen,
 )
 from vlessp.tui.theme import apply_theme, next_theme, register_all
-from vlessp.tui.widgets import KeyHints, ProfileDetail, ProfileTable, StatusBar
+from vlessp.tui.widgets import (
+    DETAIL_HEIGHT,
+    KeyHints,
+    ProfileDetail,
+    ProfileTable,
+    StatusBar,
+)
 
 if TYPE_CHECKING:
     from vlessp.profiles import Profile
@@ -84,6 +90,15 @@ LOG_REFRESH_SECONDS = 1.0
 # Retained length of our own log notes. Xray's own tail is windowed by the
 # service, not here.
 MAX_LOG_NOTES = 200
+
+# Fixed chrome under the table, in rows, used to size it. The header and the
+# status bar are one row each; the key hints one; the detail band DETAIL_HEIGHT;
+# the log pane twelve when it is shown. The table is capped at whatever is left,
+# so a long list scrolls instead of pushing the panels off-screen.
+CHROME_ROWS = 2  # header + status bar
+HINTS_ROWS = 1
+LOG_PANE_ROWS = 12
+MIN_TABLE_ROWS = 3
 
 
 class _Unset:
@@ -238,14 +253,17 @@ class VlessApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         yield ProfileTable(id="profiles")
+        # Detail directly under the table it describes. With the table now hugging
+        # its rows (see ProfileTable.CSS) the panel reads as attached to the data
+        # rather than stranded at the bottom below the key hints. The log pane is a
+        # diagnostic surface that is hidden by default, so this is the only
+        # always-visible readout.
+        yield ProfileDetail(id="detail")
         # The key hints go directly under the table, where the eye already is,
         # rather than in the footer slot at the very bottom. Textual's Footer is
         # gone on purpose: twelve bindings do not fit one un-wrapped line, and it
         # was silently truncating them — hiding `q` along the way.
         yield KeyHints()
-        # The detail panel sits below the table: the log is a diagnostic surface
-        # that is hidden by default, so this is the only always-visible readout.
-        yield ProfileDetail(id="detail")
         yield Static("", id="log-pane")
         yield StatusBar(id="status")
 
@@ -257,10 +275,43 @@ class VlessApp(App[None]):
         # The log pane starts collapsed: it is a diagnostic surface, not part of
         # the main workflow, and an always-open pane would halve the table.
         self.query_one("#log-pane", Static).display = False
+        self._fit_table_height()
         self._reload_table()
         # A cheap in-memory status tick. The log refresh below it is a worker
         # because ``log_tail()`` may read a file written by the Xray process.
         self.set_interval(LOG_REFRESH_SECONDS, self._tick)
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Re-divide the vertical space whenever the terminal changes size.
+
+        Uses the event's size, not ``self.size``: this handler runs before the
+        app's cached size is updated, so reading it here would re-apply the old
+        dimensions and the table would keep its stale height.
+        """
+        self._fit_table_height(height=event.size.height)
+
+    def _fit_table_height(self, *, height: int | None = None) -> None:
+        """Cap the profile table at the rows left for it.
+
+        A ``1fr`` table filled the screen and pushed the detail panel and key
+        hints off the bottom; so did ``auto``, which asks for its full content
+        height however tall that is. Neither CSS ``max-height`` form can express
+        "the space left after the widgets below me" — ``1fr`` resolves against
+        docked siblings only, and a percentage is blind to them — so the number
+        is computed here from the terminal height and re-applied on resize.
+
+        The cap is in rows, not cells, because it is subtracted from a row count.
+        """
+        if height is None:
+            height = self.size.height
+        if height <= 0:
+            return  # before the first layout there is nothing to divide up
+        reserved = CHROME_ROWS + HINTS_ROWS + DETAIL_HEIGHT
+        if self.query_one("#log-pane", Static).display:
+            reserved += LOG_PANE_ROWS
+        self.query_one(ProfileTable).styles.max_height = max(
+            MIN_TABLE_ROWS, height - reserved
+        )
 
     # -- detail panel -----------------------------------------------------
 
@@ -546,6 +597,7 @@ class VlessApp(App[None]):
             return
         pane = self.query_one("#log-pane", Static)
         pane.display = not pane.display
+        self._fit_table_height()
         if pane.display:
             self._refresh_log()
 
@@ -755,11 +807,16 @@ class VlessApp(App[None]):
         )
 
     def _state_indicator(self) -> tuple[str, str]:
-        """The header dot. Switching outranks error so it never lies while busy."""
+        """The header dot. Switching outranks error so it never lies while busy.
+
+        The glyph, not just the colour, separates the states: ``●`` running and
+        ``✕`` error must be distinguishable on a monochrome or colour-blind
+        terminal, where a red dot and a green dot are the same dot.
+        """
         if self._switching:
             return "⟳", "SWITCHING"
         if self._last_error is not None:
-            return "●", "ERROR"
+            return "✕", "ERROR"
         if self._is_running():
             return "●", "RUNNING"
         return "○", "STOPPED"

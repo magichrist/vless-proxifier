@@ -20,7 +20,9 @@ Framework: **Textual**. Rationale in [`00-decisions.md` D1](00-decisions.md#d1--
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Header** — app name, profile count, and a state dot (`●` running / `○` stopped / `●` error).
+- **Header** — app name, profile count, and a state glyph: `●` running, `○` stopped, `⟳` switching,
+  `✕` error. The glyph, not only its colour, carries the state, so the two remain distinguishable on a
+  monochrome or colour-blind terminal.
 - **ProfileTable** — a `DataTable`. The `▌` marks the active profile. `—` in LAT means not probed
   yet. Rows sort by latency after `t`, alphabetically otherwise.
 - **StatusBar** — live listener addresses and the resolved Xray version. Red when stopped.
