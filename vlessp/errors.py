@@ -20,6 +20,7 @@ Do NOT format an AppError from a URI, a parsed link dict, or a config file.
 Format from the *shape* of the problem: "invalid port", "unsupported transport",
 "the link disables TLS verification".
 """
+
 from __future__ import annotations
 
 
