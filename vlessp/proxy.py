@@ -11,6 +11,7 @@ Ownership rule: this class owns persisting the *active profile id*. It does
 NOT own writing profiles themselves; callers use ``ProfileStore.add`` /
 ``update`` / ``delete`` directly, and this class never invents profiles.
 """
+
 from __future__ import annotations
 
 import threading
