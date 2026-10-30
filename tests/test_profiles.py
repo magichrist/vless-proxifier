@@ -1,4 +1,5 @@
 """Tests for vlessp.profiles — JSON store, no-UUID invariant, atomic saves."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -412,8 +413,18 @@ class FakeNode:
 def sub_nodes_one_two_three() -> list[FakeNode]:
     return [
         FakeNode("Node One", sub_link(node_uuid=SUB_UUID_A)),
-        FakeNode("Node Two", sub_link("node2.example.com", 8443, sni="node2.example.com", node_uuid=SUB_UUID_B, name="Node Two")),
-        FakeNode("Node Three", sub_link("node3.example.com", 2053, sni="node3.example.com", node_uuid=SUB_UUID_C, name="Node Three")),
+        FakeNode(
+            "Node Two",
+            sub_link(
+                "node2.example.com", 8443, sni="node2.example.com", node_uuid=SUB_UUID_B, name="Node Two"
+            ),
+        ),
+        FakeNode(
+            "Node Three",
+            sub_link(
+                "node3.example.com", 2053, sni="node3.example.com", node_uuid=SUB_UUID_C, name="Node Three"
+            ),
+        ),
     ]
 
 
@@ -644,7 +655,16 @@ class TestReconcileImport(unittest.TestCase):
             store.reconcile(sub_nodes_one_two_three(), source=SUB_A, secrets=secrets)
             other = [
                 FakeNode("Beta One", sub_link(node_uuid=SUB_UUID_ROTATED, name="Beta One")),
-                FakeNode("Beta Two", sub_link("node2.example.com", 8443, sni="node2.example.com", node_uuid=SUB_UUID_C, name="Beta Two")),
+                FakeNode(
+                    "Beta Two",
+                    sub_link(
+                        "node2.example.com",
+                        8443,
+                        sni="node2.example.com",
+                        node_uuid=SUB_UUID_C,
+                        name="Beta Two",
+                    ),
+                ),
             ]
             result = store.reconcile(other, source=SUB_B, secrets=secrets)
             self.assertEqual(len(result.added), 2)
@@ -785,7 +805,10 @@ class TestSubscriptionPersistence(unittest.TestCase):
             hand = store.add("home", SAMPLE_LINK)
             nodes = [
                 FakeNode("imported", sub_link(node_uuid=SUB_UUID_A)),
-                FakeNode("second", sub_link("node2.example.com", 8443, sni="node2.example.com", node_uuid=SUB_UUID_B)),
+                FakeNode(
+                    "second",
+                    sub_link("node2.example.com", 8443, sni="node2.example.com", node_uuid=SUB_UUID_B),
+                ),
             ]
             store.reconcile(nodes, source=SUB_A, secrets=secrets)
             by_server = {p.link["server"]: p for p in store.by_source(SUB_A)}
@@ -865,9 +888,7 @@ class TestSubscriptionPersistence(unittest.TestCase):
                         {
                             "version": STORE_VERSION,
                             "active": None,
-                            "profiles": [
-                                {"id": "abc", "label": "x", "link": SAMPLE_LINK, "source": bad}
-                            ],
+                            "profiles": [{"id": "abc", "label": "x", "link": SAMPLE_LINK, "source": bad}],
                         }
                     ),
                     encoding="utf-8",
