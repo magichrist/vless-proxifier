@@ -21,6 +21,7 @@ the ``FAKE_XRAY_MODE`` environment variable:
   ``vless://`` string, so redaction of the CLI's own output is tested against an
   adversary that actually leaks.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -53,7 +54,7 @@ EXAMPLE_LINK = (
     "&fp=chrome&alpn=http%2F1.1&path=%2F&host=s7r.example.com#example-profile"
 )
 
-_FAKE_XRAY_SOURCE = '''#!/usr/bin/env python3
+_FAKE_XRAY_SOURCE = """#!/usr/bin/env python3
 import json
 import os
 import socket
@@ -134,7 +135,7 @@ def main(argv):
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
-'''
+"""
 
 
 class DictSecretStore:
@@ -217,9 +218,7 @@ class CliTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.resolve_calls: list[tuple[str | None, bool]] = []
-        patcher = mock.patch(
-            "vlessp.cli.resolve_xray", side_effect=self._fake_resolve
-        )
+        patcher = mock.patch("vlessp.cli.resolve_xray", side_effect=self._fake_resolve)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -239,9 +238,7 @@ class CliTestCase(unittest.TestCase):
     def set_mode(self, mode: str) -> None:
         os.environ["FAKE_XRAY_MODE"] = mode
 
-    def add_profile(
-        self, label: str, *, uuid_value: str = TEST_UUID, server: str = "example.com"
-    ) -> str:
+    def add_profile(self, label: str, *, uuid_value: str = TEST_UUID, server: str = "example.com") -> str:
         """Store a profile the way the add-flow does: UUID split out to the backend."""
         link = parse_vless_uri(_profile_link(uuid_value=uuid_value, server=server, label=label))
         secret = link.pop("uuid")
@@ -257,9 +254,18 @@ class TestFlagParsing(CliTestCase):
     """Every V0 flag survives, and the parser advertises every documented one."""
 
     EXPECTED_FLAGS = (
-        "--link", "--link-file", "--xray", "--socks", "--http", "--no-http",
-        "--allow-insecure", "--check", "--update-xray",
-        "--profile", "--list", "--tui",
+        "--link",
+        "--link-file",
+        "--xray",
+        "--socks",
+        "--http",
+        "--no-http",
+        "--allow-insecure",
+        "--check",
+        "--update-xray",
+        "--profile",
+        "--list",
+        "--tui",
     )
 
     def test_help_exits_zero_and_lists_every_flag(self) -> None:
@@ -407,8 +413,14 @@ class TestCheckMode(CliTestCase):
     def test_identical_ports_are_fine_when_http_is_disabled(self) -> None:
         code, out, _err = self.run_main(
             [
-                "--check", "--link", EXAMPLE_LINK, "--no-http",
-                "--socks", "127.0.0.1:10899", "--http", "127.0.0.1:10899",
+                "--check",
+                "--link",
+                EXAMPLE_LINK,
+                "--no-http",
+                "--socks",
+                "127.0.0.1:10899",
+                "--http",
+                "127.0.0.1:10899",
             ]
         )
         self.assertEqual(code, 0)
@@ -611,6 +623,7 @@ class TestProfileMode(CliTestCase):
         """A failure after the switch succeeded must not exit with a live child."""
         self.add_profile("home")
         socks, http = f"127.0.0.1:{_free_port()}", f"127.0.0.1:{_free_port()}"
+
         # The store write is the one step of connect() that can fail after Xray
         # is already serving, so it is the case worth simulating. The profile is
         # written before the patch goes up, so every save inside the block is
@@ -637,9 +650,7 @@ class TestProfileMode(CliTestCase):
             raise AppError("stop here")  # the constructor is all this test needs
 
         with mock.patch.object(cli, "ProxyService", capture):
-            code, _out, _err = self.run_main(
-                ["--profile", "home", "--socks", socks, "--no-http"]
-            )
+            code, _out, _err = self.run_main(["--profile", "home", "--socks", socks, "--no-http"])
         self.assertEqual(code, 2)
         self.assertEqual(captured["socks"], socks)
         self.assertIsNone(captured["http"])
@@ -717,9 +728,7 @@ class TestLinkModeRun(CliTestCase):
 class TestTuiMode(CliTestCase):
     """The default and --tui build the app over the same service."""
 
-    def _run_tui(
-        self, extra: list[str]
-    ) -> tuple[int, str, str, dict[str, object]]:
+    def _run_tui(self, extra: list[str]) -> tuple[int, str, str, dict[str, object]]:
         captured: dict[str, object] = {}
 
         class FakeApp:
@@ -891,6 +900,7 @@ class TestSupervisionLoop(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
 class TestSubscriptionFlags(CliTestCase):
     """--sub / --refresh-subs fetch and import without ever printing a URL.
 
@@ -910,9 +920,7 @@ class TestSubscriptionFlags(CliTestCase):
         return "\n".join(nodes)
 
     def _node(self, uuid_value: str, host: str, label: str) -> str:
-        return (
-            f"vless://{uuid_value}@{host}:443?type=tcp&security=tls&encryption=none#{label}"
-        )
+        return f"vless://{uuid_value}@{host}:443?type=tcp&security=tls&encryption=none#{label}"
 
     def test_sub_fetches_and_imports_a_stored_subscription(self) -> None:
         self.secrets.set("subscription:work", "https://sub.example/list")
