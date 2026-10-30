@@ -24,6 +24,7 @@ Nothing in this module imports Textual. That is deliberate: ``theme.py`` imports
 it, and a cycle there would make the registry unimportable in the one place that
 must never fail (start-up).
 """
+
 from __future__ import annotations
 
 import math
@@ -79,6 +80,7 @@ def luminance(colour: str) -> float:
     whether a *rendered* colour is legible on the surface it is about to paint,
     rather than trusting that the palette pair it picked was the pair measured.
     """
+
     def channel(value: int) -> float:
         scaled = value / 255
         return scaled / 12.92 if scaled <= 0.04045 else ((scaled + 0.055) / 1.055) ** 2.4
@@ -170,9 +172,7 @@ def mix(first: str, second: str, amount: float) -> str:
     """
     amount = max(0.0, min(1.0, amount))
     left, right = rgb(first), rgb(second)
-    return hex_colour(
-        [left[index] + (right[index] - left[index]) * amount for index in range(3)]
-    )
+    return hex_colour([left[index] + (right[index] - left[index]) * amount for index in range(3)])
 
 
 def gradient(colour: str, stops: Sequence[str], *, phase: float = 0.0) -> list[str]:
