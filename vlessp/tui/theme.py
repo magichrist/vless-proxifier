@@ -53,6 +53,7 @@ and returns the first available match, so it answers "is this theme
 available?" incorrectly for anything containing a comma;
 ``App.available_themes`` is the right membership test.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
