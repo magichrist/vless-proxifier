@@ -10,6 +10,7 @@ Honest limitation: this measures reachability and TCP handshake latency to the
 host is up and accepting connections; it says nothing about Reality/TLS
 handshake success, bandwidth, or how the node behaves under load.
 """
+
 from __future__ import annotations
 
 import socket
