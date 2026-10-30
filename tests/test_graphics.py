@@ -17,6 +17,7 @@ Three things are asserted beyond the obvious arithmetic:
 * **Capability detection is driven by the environment**, including ``NO_COLOR``
   winning over a truecolour claim.
 """
+
 from __future__ import annotations
 
 import os
@@ -236,9 +237,7 @@ class TestPalettes(unittest.TestCase):
         for palette in palettes:
             for role in ("success", "error", "warning"):
                 with self.subTest(theme=palette["background"], role=role):
-                    self.assertGreaterEqual(
-                        contrast_ratio(palette[role], palette["background"]), 4.5
-                    )
+                    self.assertGreaterEqual(contrast_ratio(palette[role], palette["background"]), 4.5)
                     # The status strip paints the same accent on $panel. Where a
                     # palette misses, ``legible`` fixes it at render time -- so
                     # the assertion is that it *can* be fixed, not that it is.
