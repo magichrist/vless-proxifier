@@ -30,6 +30,7 @@ back to the event loop goes through ``self.app.call_from_thread(...)``. A
 ``Screen`` is a DOM node; ``call_from_thread`` lives on ``App``, so ``self.app``
 is the correct and only route back onto the loop from a screen's worker.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -329,7 +330,9 @@ class AddProfileScreen(ModalScreen[Profile | None]):
     connect to before it becomes a saved profile.
     """
 
-    DEFAULT_CSS = _BUTTON_CSS + """
+    DEFAULT_CSS = (
+        _BUTTON_CSS
+        + """
     AddProfileScreen {
         align: center middle;
     }
@@ -356,6 +359,7 @@ class AddProfileScreen(ModalScreen[Profile | None]):
         color: $error;
     }
     """
+    )
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
@@ -537,7 +541,9 @@ class EditProfileScreen(ModalScreen[Profile | None]):
     single validator instead of this module growing a second, drifting one.
     """
 
-    DEFAULT_CSS = _BUTTON_CSS + """
+    DEFAULT_CSS = (
+        _BUTTON_CSS
+        + """
     EditProfileScreen {
         align: center middle;
     }
@@ -568,6 +574,7 @@ class EditProfileScreen(ModalScreen[Profile | None]):
         color: $error;
     }
     """
+    )
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
@@ -613,7 +620,7 @@ class EditProfileScreen(ModalScreen[Profile | None]):
             yield Input(value=str(link.get("host_header", "")), id="host", classes="host-field")
             yield Label("Flow")
             yield Select(
-                [( "(none)", ""), ("xtls-rprx-vision", "xtls-rprx-vision")],
+                [("(none)", ""), ("xtls-rprx-vision", "xtls-rprx-vision")],
                 value=str(link.get("flow", "")),
                 allow_blank=False,
                 id="flow",
@@ -712,9 +719,7 @@ class EditProfileScreen(ModalScreen[Profile | None]):
                 "sni": self.query_one("#sni", Input).value.strip(),
                 "fingerprint": self.query_one("#fingerprint", Input).value.strip(),
                 "alpn": [
-                    part.strip()
-                    for part in self.query_one("#alpn", Input).value.split(",")
-                    if part.strip()
+                    part.strip() for part in self.query_one("#alpn", Input).value.split(",") if part.strip()
                 ],
                 "path": self.query_one("#path", Input).value.strip(),
                 "host_header": self.query_one("#host", Input).value.strip(),
@@ -864,14 +869,18 @@ class AddressScreen(ModalScreen[Profile | None]):
         with _titled("SERVER ADDRESS"):
             yield Static(Text("Server address"), classes="title")
             yield Static(
-                Text(f"currently {self._profile.link.get('server', '?')}:{self._profile.link.get('port', '?')}"),
+                Text(
+                    f"currently {self._profile.link.get('server', '?')}:{self._profile.link.get('port', '?')}"
+                ),
                 classes="current",
             )
             # Explicit labels, not placeholders: a placeholder disappears the
             # moment the field has a value, leaving two identical boxes whose
             # meaning the user has to remember.
             yield Label("Server")
-            yield Input(value=str(self._profile.link.get("server") or ""), placeholder="host or IP", id="server")
+            yield Input(
+                value=str(self._profile.link.get("server") or ""), placeholder="host or IP", id="server"
+            )
             yield Label("Port")
             yield Input(
                 value=str(self._profile.link.get("port") or ""),
@@ -1083,7 +1092,9 @@ class ListenersScreen(ModalScreen[Listeners | None]):
             with Horizontal(classes="row"):
                 yield Label("SOCKS5", classes="row-label")
                 yield Input(value=socks_host, placeholder="host", id="socks-host", classes="host")
-                yield Input(value=socks_port, placeholder="port", id="socks-port", classes="port", type="integer")
+                yield Input(
+                    value=socks_port, placeholder="port", id="socks-port", classes="port", type="integer"
+                )
             yield Checkbox("Enable HTTP listener", value=self._http is not None, id="http-on")
             with Horizontal(classes="row http-row"):
                 yield Label("HTTP", classes="row-label")
@@ -1091,7 +1102,10 @@ class ListenersScreen(ModalScreen[Listeners | None]):
                     value=http_host or "127.0.0.1", placeholder="host", id="http-host", classes="host"
                 )
                 yield Input(
-                    value=http_port or "10809", placeholder="port", id="http-port", classes="port",
+                    value=http_port or "10809",
+                    placeholder="port",
+                    id="http-port",
+                    classes="port",
                     type="integer",
                 )
             yield Static("", id="warning", classes="warning")
@@ -1153,9 +1167,7 @@ class ListenersScreen(ModalScreen[Listeners | None]):
                 exposed = True
                 break
         warning = self.query_one("#warning", Static)
-        warning.update(
-            Text("Bound beyond loopback: the proxy has no authentication.") if exposed else ""
-        )
+        warning.update(Text("Bound beyond loopback: the proxy has no authentication.") if exposed else "")
 
     # -- save -----------------------------------------------------------
 
@@ -1261,9 +1273,7 @@ class HelpScreen(ModalScreen[None]):
         ),
         (
             "App",
-            (
-                ("q", "Stop the proxy and quit"),
-            ),
+            (("q", "Stop the proxy and quit"),),
         ),
     )
 
@@ -1373,7 +1383,7 @@ class AddSubscriptionScreen(ModalScreen[str | None]):
         for profile in self._store.all():
             source = getattr(profile, "source", "") or ""
             if isinstance(source, str) and source.startswith(_SUB_SOURCE_PREFIX):
-                names.append(source[len(_SUB_SOURCE_PREFIX):])
+                names.append(source[len(_SUB_SOURCE_PREFIX) :])
         return sorted(names)
 
     def _is_duplicate(self, name: str) -> bool:
@@ -1396,9 +1406,7 @@ class AddSubscriptionScreen(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         names = self._subscription_names()
-        existing = (
-            f"Existing subscriptions: {', '.join(names)}" if names else "No subscriptions yet."
-        )
+        existing = f"Existing subscriptions: {', '.join(names)}" if names else "No subscriptions yet."
         with _titled("ADD SUBSCRIPTION"):
             yield Static(Text("Add subscription"), classes="title")
             yield Static(Text(existing), classes="existing", id="existing")
