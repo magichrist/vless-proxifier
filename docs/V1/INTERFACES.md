@@ -36,6 +36,7 @@ MAX_URI_BYTES: int
 UUID_RE: re.Pattern[str]
 SHA256_RE: re.Pattern[str]
 
+
 def is_valid_hostname(host: str) -> bool: ...
 def query_params(query: str) -> dict[str, str]: ...
 def parse_vless_uri(raw: str, *, allow_insecure: bool = False) -> dict[str, Any]: ...
@@ -55,13 +56,16 @@ Binary install + process supervision. Two distinct responsibilities, both subpro
 GITHUB_API: str
 MAX_DOWNLOAD_BYTES: int
 
+
 def app_data_dir() -> Path: ...
 def request_bytes(url: str, *, limit: int, timeout: float = 30.0, json_api: bool = False) -> bytes: ...
 def platform_asset() -> str: ...
 def find_latest_release_asset(asset_name: str) -> tuple[str, str, str]: ...
 def install_xray(*, force: bool = False) -> Path: ...
 def resolve_xray(xray_arg: str | None, *, update: bool = False) -> Path: ...
-def wait_for_listener(process: subprocess.Popen[bytes], addresses: list[str], timeout: float = 10.0) -> None: ...
+def wait_for_listener(
+    process: subprocess.Popen[bytes], addresses: list[str], timeout: float = 10.0
+) -> None: ...
 ```
 
 `XrayProcess` — the **switching seam**. See `01-architecture.md`. This is the single most
@@ -76,12 +80,14 @@ class XrayProcess:
         Raises AppError on any failure. MUST NOT leave a half-started process.
         If -test fails, the currently-running process is untouched and still serving.
         """
+
     def stop(self) -> None:
         """Idempotent. Terminate (4s grace) then kill (2s grace)."""
+
     @property
     def running(self) -> bool: ...
     @property
-    def last_log(self) -> str: ...   # redacted Xray stderr tail, for the TUI log pane
+    def last_log(self) -> str: ...  # redacted Xray stderr tail, for the TUI log pane
 ```
 
 `resolve_xray` note: the old signature was `resolve_xray(args: argparse.Namespace)`. The new one
@@ -94,32 +100,36 @@ takes plain values so it is testable without argparse. The CLI adapts.
 ```python
 STORE_VERSION: int
 
+
 @dataclass(frozen=True)
 class Profile:
-    id: str                    # uuid4().hex; also the Keychain account name
-    label: str                 # human name, defaults to the URI fragment
-    link: dict[str, Any]       # parsed link MINUS uuid — never holds a UUID
+    id: str  # uuid4().hex; also the Keychain account name
+    label: str  # human name, defaults to the URI fragment
+    link: dict[str, Any]  # parsed link MINUS uuid — never holds a UUID
     last_latency_ms: int | None = None
+
 
 def resolve_link(profile: Profile, secrets: "SecretStore") -> dict[str, Any]:
     """The ONLY place a UUID is re-attached. Raises AppError if the Keychain item is gone."""
 
+
 class ProfileStore:
     def __init__(self, path: Path | None = None) -> None: ...
     def load(self) -> None: ...
-    def save(self) -> None: ...            # atomic: temp file + os.replace()
+    def save(self) -> None: ...  # atomic: temp file + os.replace()
     def all(self) -> list[Profile]: ...
-    def get(self, profile_id: str) -> Profile: ...        # raises AppError if unknown
-    def add(self, label: str, link: dict[str, Any]) -> Profile: ...   # link must have no uuid
-    def update(self, profile_id: str, *, label: str | None = None,
-               link: dict[str, Any] | None = None) -> Profile: ...
+    def get(self, profile_id: str) -> Profile: ...  # raises AppError if unknown
+    def add(self, label: str, link: dict[str, Any]) -> Profile: ...  # link must have no uuid
+    def update(
+        self, profile_id: str, *, label: str | None = None, link: dict[str, Any] | None = None
+    ) -> Profile: ...
     def delete(self, profile_id: str) -> None: ...
-    def resolve(self, ref: str) -> Profile: ...   # by id OR label
+    def resolve(self, ref: str) -> Profile: ...  # by id OR label
     @property
     def active_id(self) -> str | None: ...
     def set_active(self, profile_id: str) -> None: ...
     @property
-    def listeners(self) -> Listeners: ...   # local SOCKS5/HTTP addresses
+    def listeners(self) -> Listeners: ...  # local SOCKS5/HTTP addresses
     def set_listeners(self, socks: str, http: str | None) -> Listeners: ...
 ```
 
@@ -135,15 +145,18 @@ Atomic save: temp file in the same directory, then `os.replace()`. Directory `07
 The **only** module permitted to touch the Keychain.
 
 ```python
-KEYCHAIN_SERVICE: str   # "vless-python-proxy"
+KEYCHAIN_SERVICE: str  # "vless-python-proxy"
+
 
 class SecretStore(Protocol):
     def set(self, account: str, value: str) -> None: ...
-    def get(self, account: str) -> str: ...          # raises AppError if absent
+    def get(self, account: str) -> str: ...  # raises AppError if absent
     def delete(self, account: str) -> None: ...
 
-class MacOSKeychain:   # via the `security` CLI, stdlib subprocess
+
+class MacOSKeychain:  # via the `security` CLI, stdlib subprocess
     ...
+
 
 class NullSecretStore:
     """Always raises AppError on get. Used by every test — tests never touch the real Keychain."""
@@ -161,22 +174,29 @@ Never include the UUID itself in the message.
 def probe_server(host: str, port: int, *, timeout: float = 3.0) -> int | None:
     """TCP connect latency in ms, or None if unreachable. Never starts a proxy."""
 
+
 # proxy.py
 class ProxyService:
-    def __init__(self, store: ProfileStore, secrets: SecretStore,
-                 xray_path: Path, *, socks_addr: str = "127.0.0.1:10808",
-                 http_addr: str | None = "127.0.0.1:10809") -> None: ...
-    def connect(self, ref: str) -> Profile: ...     # full D7 switch; raises AppError
+    def __init__(
+        self,
+        store: ProfileStore,
+        secrets: SecretStore,
+        xray_path: Path,
+        *,
+        socks_addr: str = "127.0.0.1:10808",
+        http_addr: str | None = "127.0.0.1:10809",
+    ) -> None: ...
+    def connect(self, ref: str) -> Profile: ...  # full D7 switch; raises AppError
     def disconnect(self) -> None: ...
-    def connect_active(self) -> Profile | None: ... # reconnect last active on launch
-    def set_listeners(self, *, socks_addr: str,
-                      http_addr: str | None) -> bool:
+    def connect_active(self) -> Profile | None: ...  # reconnect last active on launch
+    def set_listeners(self, *, socks_addr: str, http_addr: str | None) -> bool:
         """Reconfigure the local listeners; restart the live tunnel if any.
         Returns True when a running tunnel was restarted onto the new ports."""
-    def probe_all(self, on_result: Callable[[str, int | None], None],
-                  *, timeout: float = 3.0) -> None:
+
+    def probe_all(self, on_result: Callable[[str, int | None], None], *, timeout: float = 3.0) -> None:
         """Threads, one per profile. Calls on_result(profile_id, ms_or_None).
         NEVER starts a proxy and NEVER changes the active profile."""
+
     @property
     def running(self) -> bool: ...
     @property
@@ -196,13 +216,21 @@ serialized — use a `threading.Lock`. A double-Enter must not race two spawns.
 class VlessApp(App):
     def __init__(self, service: ProxyService, store: ProfileStore) -> None: ...
 
+
 # tui/screens.py
 class AddProfileScreen(ModalScreen[Profile | None]): ...
+
+
 class EditProfileScreen(ModalScreen[Profile | None]): ...
+
+
 class ConfirmScreen(ModalScreen[bool]): ...
+
 
 # tui/widgets.py
 class ProfileTable(DataTable): ...
+
+
 class StatusBar(Static): ...
 ```
 
