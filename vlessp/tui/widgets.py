@@ -22,6 +22,7 @@ structural:
 Textual's own rendering substrate and is guaranteed present wherever Textual
 imports; nothing new is added to the dependency set.
 """
+
 from __future__ import annotations
 
 import math
@@ -301,11 +302,10 @@ class ProfileTable(DataTable):
             super().__init__()
             self.table = table
 
-    def watch_cursor_coordinate(
-        self, old: Coordinate, new: Coordinate
-    ) -> None:
+    def watch_cursor_coordinate(self, old: Coordinate, new: Coordinate) -> None:
         self.post_message(self.Highlighted(self))
         super().watch_cursor_coordinate(old, new)
+
     """The profile list.
 
     Rows are keyed by profile id, so :meth:`selected_id` can hand the app a
@@ -816,20 +816,59 @@ class KeyHints(Static):
     TIERS: tuple[tuple[list[str], list[str], str], ...] = (
         (
             ["c", "space", "t", "l", "s", "e", "i", "p", "d", "o", "alt+t", "h", "q"],
-            ["connect", "stop/resume", "test", "add link", "add sub", "edit",
-             "ip/port", "local ports", "delete", "output", "theme", "help", "quit"],
+            [
+                "connect",
+                "stop/resume",
+                "test",
+                "add link",
+                "add sub",
+                "edit",
+                "ip/port",
+                "local ports",
+                "delete",
+                "output",
+                "theme",
+                "help",
+                "quit",
+            ],
             " · ",
         ),
         (
             ["c", "space", "t", "l", "s", "e", "i", "p", "d", "o", "alt+t", "h", "q"],
-            ["conn", "stop", "test", "add link", "add sub", "edit",
-             "ip/port", "ports", "delete", "output", "theme", "help", "quit"],
+            [
+                "conn",
+                "stop",
+                "test",
+                "add link",
+                "add sub",
+                "edit",
+                "ip/port",
+                "ports",
+                "delete",
+                "output",
+                "theme",
+                "help",
+                "quit",
+            ],
             " · ",
         ),
         (
             ["c", "sp", "t", "l", "s", "e", "i", "p", "d", "o", "^T", "h", "q"],
-            ["conn", "stop", "test", "add", "sub", "edit",
-             "ip", "ports", "del", "out", "theme", "help", "quit"],
+            [
+                "conn",
+                "stop",
+                "test",
+                "add",
+                "sub",
+                "edit",
+                "ip",
+                "ports",
+                "del",
+                "out",
+                "theme",
+                "help",
+                "quit",
+            ],
             " ",
         ),
         # Floor: keys only, no labels. For a terminal narrower than the narrow
