@@ -12,6 +12,7 @@ Two jobs, deliberately kept together because they share one external program:
 talks to this class and nothing else; a future zero-downtime hot-swap satisfies
 the same four members and requires no change above.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -54,18 +55,28 @@ MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
 # binary is silently ignored in favour of a freshly downloaded one. The
 # downloader stays the source of truth; vendoring is a cache it happens to
 # satisfy.
-_BUNDLED_SHA256 = frozenset({
-    # v26.3.27, verified against the official Xray-macos-arm64-v8a.zip.dgst
-    "5d9dd24c0aba4b6cfcc6a33a5d67f854816ee17f392bf932ec8176da46f7e404",
-})
+_BUNDLED_SHA256 = frozenset(
+    {
+        # v26.3.27, verified against the official Xray-macos-arm64-v8a.zip.dgst
+        "5d9dd24c0aba4b6cfcc6a33a5d67f854816ee17f392bf932ec8176da46f7e404",
+    }
+)
 _BUNDLED_DIR_NAMES = (
-    "xray-macos-arm64-v8a", "xray-macos-arm64", "xray-macos-64",
-    "xray-linux-arm64-v8a", "xray-linux-64",
+    "xray-macos-arm64-v8a",
+    "xray-macos-arm64",
+    "xray-macos-64",
+    "xray-linux-arm64-v8a",
+    "xray-linux-64",
 )
 
 # Hosts we are willing to end up talking to after a redirect. Release metadata
 # points at github.com; the actual bytes come from the release-assets CDN.
-_DOWNLOAD_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+_DOWNLOAD_HOSTS = {
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+}
 
 # Bounds for the stderr/stdout tail kept in memory. Xray is chatty and this is a
 # log pane, not an audit log: a bounded ring means a long-running proxy cannot
@@ -148,7 +159,9 @@ def request_bytes(url: str, *, limit: int, timeout: float = 30.0, json_api: bool
     except AppError:
         raise
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        raise AppError(f"Could not download from the official Xray release service ({type(exc).__name__}). Check your internet connection or use --xray with an existing binary.") from None
+        raise AppError(
+            f"Could not download from the official Xray release service ({type(exc).__name__}). Check your internet connection or use --xray with an existing binary."
+        ) from None
 
 
 def platform_asset() -> str:
@@ -167,7 +180,9 @@ def platform_asset() -> str:
         return "Xray-linux-arm64-v8a.zip"
     if system == "linux" and machine in {"x86_64", "amd64"}:
         return "Xray-linux-64.zip"
-    raise AppError(f"Automatic Xray install is not configured for {platform.system()} {platform.machine()}; provide --xray /path/to/xray.")
+    raise AppError(
+        f"Automatic Xray install is not configured for {platform.system()} {platform.machine()}; provide --xray /path/to/xray."
+    )
 
 
 def find_latest_release_asset(asset_name: str) -> tuple[str, str, str]:
@@ -190,10 +205,16 @@ def find_latest_release_asset(asset_name: str) -> tuple[str, str, str]:
     archive_url = assets.get(asset_name)
     digest_url = assets.get(asset_name + ".dgst")
     if not archive_url or not digest_url:
-        raise AppError(f"The latest stable Xray release ({tag}) does not contain the expected asset {asset_name} and its .dgst file.")
+        raise AppError(
+            f"The latest stable Xray release ({tag}) does not contain the expected asset {asset_name} and its .dgst file."
+        )
     for url in (archive_url, digest_url):
         parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}:
+        if parsed.scheme != "https" or parsed.hostname not in {
+            "github.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+        }:
             raise AppError("Unexpected download host in release metadata; refusing download.")
     return tag, archive_url, digest_url
 
@@ -243,7 +264,9 @@ def install_xray(*, force: bool = False) -> Path:
                 expected = match.group(1).lower()
                 break
     if not expected:
-        raise AppError("Could not find the archive's SHA-256 in the official .dgst file; refusing to install it.")
+        raise AppError(
+            "Could not find the archive's SHA-256 in the official .dgst file; refusing to install it."
+        )
     actual = hashlib.sha256(archive).hexdigest()
     if actual.lower() != expected:
         raise AppError("Xray archive SHA-256 verification failed; the file was not installed.")
@@ -300,7 +323,9 @@ def wait_for_listener(process: subprocess.Popen[bytes], addresses: list[str], ti
     last_error = "not listening yet"
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise AppError(f"Xray exited before opening the local proxy (exit code {process.returncode}). Check the Xray output above.")
+            raise AppError(
+                f"Xray exited before opening the local proxy (exit code {process.returncode}). Check the Xray output above."
+            )
         all_ready = True
         for address in addresses:
             host, port_s = address.rsplit(":", 1)
@@ -314,7 +339,9 @@ def wait_for_listener(process: subprocess.Popen[bytes], addresses: list[str], ti
         if all_ready:
             return
         time.sleep(0.15)
-    raise AppError(f"Xray did not open the requested local port(s) within {timeout:.0f}s ({last_error}). Check the Xray output above.")
+    raise AppError(
+        f"Xray did not open the requested local port(s) within {timeout:.0f}s ({last_error}). Check the Xray output above."
+    )
 
 
 def repo_root() -> Path:
@@ -348,7 +375,10 @@ def _warn_if_quarantined(path: Path) -> None:
     try:
         result = subprocess.run(
             ["xattr", "-p", "com.apple.quarantine", str(path)],
-            capture_output=True, text=True, timeout=5, check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return
@@ -591,7 +621,9 @@ class XrayProcess:
         try:
             os.chmod(runtime.name, 0o700)
             config_path = Path(runtime.name) / "config.json"
-            config_path.write_text(json.dumps(config, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            config_path.write_text(
+                json.dumps(config, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+            )
             os.chmod(config_path, 0o600)
         except OSError:
             # Deterministic cleanup: relying on the TemporaryDirectory finalizer
