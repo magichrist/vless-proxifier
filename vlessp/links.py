@@ -17,6 +17,7 @@ no error raised from this module may contain any part of a VLESS URI. Messages
 are written from the *shape* of the problem ("unsupported transport", "invalid
 port"), never interpolated from the input.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -82,9 +83,7 @@ def parse_listener_addr(address: str) -> tuple[str, int]:
     try:
         ip = ipaddress.ip_address(host.strip("[]"))
     except ValueError:
-        raise AppError(
-            "Listener host must be an IP address (e.g. 127.0.0.1, ::1, or 0.0.0.0)."
-        ) from None
+        raise AppError("Listener host must be an IP address (e.g. 127.0.0.1, ::1, or 0.0.0.0).") from None
     return str(ip), int(port_s)
 
 
@@ -116,7 +115,10 @@ def is_valid_hostname(host: str) -> bool:
     except ValueError:
         pass
     labels = host.split(".")
-    return all(1 <= len(label) <= 63 and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label) for label in labels)
+    return all(
+        1 <= len(label) <= 63 and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
+        for label in labels
+    )
 
 
 _UUID_SHAPE_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
@@ -224,7 +226,9 @@ def parse_vless_uri(raw: str, *, allow_insecure: bool = False) -> dict[str, Any]
         raise AppError("The insecure/allowInsecure parameter must be a boolean.")
     insecure = insecure_raw in {"1", "true", "yes"}
     if insecure and not allow_insecure:
-        raise AppError("The link disables TLS certificate verification. Use --allow-insecure only if you accept the security risk.")
+        raise AppError(
+            "The link disables TLS certificate verification. Use --allow-insecure only if you accept the security risk."
+        )
     encryption = get("encryption", default="none")
     if not encryption:
         raise AppError("VLESS encryption parameter is empty.")
@@ -260,7 +264,9 @@ def parse_vless_uri(raw: str, *, allow_insecure: bool = False) -> dict[str, Any]
         "fingerprint": fingerprint,
         "alpn": alpn,
         "allow_insecure": insecure,
-        "pins": ",".join(item.replace(":", "").strip().lower() for item in pin.split(",") if item.strip()) if pin else "",
+        "pins": ",".join(item.replace(":", "").strip().lower() for item in pin.split(",") if item.strip())
+        if pin
+        else "",
         "flow": get("flow"),
         "path": get("path", default="/"),
         "host_header": get("host"),
@@ -297,7 +303,9 @@ def parse_vless_uri(raw: str, *, allow_insecure: bool = False) -> dict[str, Any]
                 headers = json.loads(headers_text)
             except json.JSONDecodeError:
                 raise AppError("WebSocket headers must be valid JSON.") from None
-            if not isinstance(headers, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items()):
+            if not isinstance(headers, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
+            ):
                 raise AppError("WebSocket headers must be a JSON object with string keys and values.")
             out["headers"] = headers
         if out["host_header"]:
@@ -345,7 +353,10 @@ def build_xray_config(link: dict[str, Any], socks_addr: str, http_addr: str | No
         except AppError as exc:
             raise AppError(f"{exc} (for the {protocol} listener)") from None
         inbound: dict[str, Any] = {
-            "tag": tag, "listen": ip_literal, "port": port, "protocol": protocol,
+            "tag": tag,
+            "listen": ip_literal,
+            "port": port,
+            "protocol": protocol,
             "settings": {"auth": "noauth", "udp": True, "userLevel": 0} if protocol == "socks" else {},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
         }
@@ -358,41 +369,65 @@ def build_xray_config(link: dict[str, Any], socks_addr: str, http_addr: str | No
     stream: dict[str, Any] = {"network": link["network"], "security": link["security"]}
     if link["security"] == "tls":
         tls: dict[str, Any] = {"allowInsecure": link["allow_insecure"]}
-        if link["sni"]: tls["serverName"] = link["sni"]
-        if link["fingerprint"]: tls["fingerprint"] = link["fingerprint"]
-        if link["alpn"]: tls["alpn"] = link["alpn"]
-        if link["pins"]: tls["pinnedPeerCertSha256"] = link["pins"]
+        if link["sni"]:
+            tls["serverName"] = link["sni"]
+        if link["fingerprint"]:
+            tls["fingerprint"] = link["fingerprint"]
+        if link["alpn"]:
+            tls["alpn"] = link["alpn"]
+        if link["pins"]:
+            tls["pinnedPeerCertSha256"] = link["pins"]
         stream["tlsSettings"] = tls
     elif link["security"] == "reality":
-        reality = {"serverName": link["sni"], "fingerprint": link["fingerprint"], "publicKey": link["reality_public_key"], "shortId": link["reality_short_id"]}
-        if link["reality_spider_x"]: reality["spiderX"] = link["reality_spider_x"]
+        reality = {
+            "serverName": link["sni"],
+            "fingerprint": link["fingerprint"],
+            "publicKey": link["reality_public_key"],
+            "shortId": link["reality_short_id"],
+        }
+        if link["reality_spider_x"]:
+            reality["spiderX"] = link["reality_spider_x"]
         stream["realitySettings"] = reality
     if link["network"] == "ws":
         ws: dict[str, Any] = {"path": link["path"] or "/"}
-        if link["headers"]: ws["headers"] = link["headers"]
+        if link["headers"]:
+            ws["headers"] = link["headers"]
         stream["wsSettings"] = ws
     elif link["network"] == "grpc":
         grpc: dict[str, Any] = {"serviceName": link["grpc_service"], "multiMode": link["grpc_multi_mode"]}
-        if link["grpc_authority"]: grpc["authority"] = link["grpc_authority"]
+        if link["grpc_authority"]:
+            grpc["authority"] = link["grpc_authority"]
         stream["grpcSettings"] = grpc
     elif link["network"] == "httpupgrade":
         upgrade: dict[str, Any] = {"path": link["httpupgrade_path"] or "/"}
-        if link["httpupgrade_host"]: upgrade["host"] = link["httpupgrade_host"]
+        if link["httpupgrade_host"]:
+            upgrade["host"] = link["httpupgrade_host"]
         stream["httpupgradeSettings"] = upgrade
     elif link["network"] == "xhttp":
         xhttp: dict[str, Any] = {"path": link["xhttp_path"] or "/"}
-        if link["xhttp_host"]: xhttp["host"] = link["xhttp_host"]
-        if link["xhttp_mode"]: xhttp["mode"] = link["xhttp_mode"]
-        if link.get("xhttp_extra") is not None: xhttp["extra"] = link["xhttp_extra"]
+        if link["xhttp_host"]:
+            xhttp["host"] = link["xhttp_host"]
+        if link["xhttp_mode"]:
+            xhttp["mode"] = link["xhttp_mode"]
+        if link.get("xhttp_extra") is not None:
+            xhttp["extra"] = link["xhttp_extra"]
         stream["xhttpSettings"] = xhttp
 
     return {
         "log": {"loglevel": "warning"},
         "inbounds": inbounds,
         "outbounds": [
-            {"tag": "proxy", "protocol": "vless", "settings": {"vnext": [{"address": link["server"], "port": link["port"], "users": [user]}]}, "streamSettings": stream},
+            {
+                "tag": "proxy",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": link["server"], "port": link["port"], "users": [user]}]},
+                "streamSettings": stream,
+            },
             {"tag": "direct", "protocol": "freedom", "settings": {}},
             {"tag": "block", "protocol": "blackhole", "settings": {}},
         ],
-        "routing": {"domainStrategy": "AsIs", "rules": [{"type": "field", "inboundTag": tags, "outboundTag": "proxy"}]},
+        "routing": {
+            "domainStrategy": "AsIs",
+            "rules": [{"type": "field", "inboundTag": tags, "outboundTag": "proxy"}],
+        },
     }
