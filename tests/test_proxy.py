@@ -14,6 +14,7 @@ the two argv shapes ``XrayProcess`` uses — ``run -test -config PATH`` and
   id and a ``vless://`` string, so the redaction of ``log_tail()`` is tested
   against an adversary that actually leaks.
 """
+
 from __future__ import annotations
 
 import os
@@ -206,8 +207,11 @@ class ProxyTestCase(unittest.TestCase):
         socks = f"127.0.0.1:{_free_port()}"
         http = f"127.0.0.1:{_free_port()}"
         service = ProxyService(
-            self.store, self.secrets, self.fake_xray,
-            socks_addr=socks, http_addr=http,
+            self.store,
+            self.secrets,
+            self.fake_xray,
+            socks_addr=socks,
+            http_addr=http,
         )
         # Nothing may be left running: disconnect is idempotent, so calling
         # it unconditionally is safe even when the test never connected.
@@ -284,7 +288,9 @@ class TestConnect(ProxyTestCase):
     def test_connect_with_null_secret_store_raises(self) -> None:
         # The null backend fails closed: no UUID can ever be re-attached.
         null_service = ProxyService(
-            self.store, NullSecretStore(), self.fake_xray,  # type: ignore[arg-type]
+            self.store,
+            NullSecretStore(),
+            self.fake_xray,  # type: ignore[arg-type]
             socks_addr=f"127.0.0.1:{_free_port()}",
             http_addr=f"127.0.0.1:{_free_port()}",
         )
