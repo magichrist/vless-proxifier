@@ -1,4 +1,5 @@
 """Tests for vlessp.latency — bare TCP connect timing, no proxy involved."""
+
 from __future__ import annotations
 
 import socket
