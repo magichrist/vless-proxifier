@@ -20,6 +20,7 @@ an allowlist is meaningless — any host the user names would have to be
 "allowed". HTTPS + streaming size cap + hard timeout is the right control, and
 a future reader should not "fix" this by adding an allowlist.
 """
+
 from __future__ import annotations
 
 import base64
@@ -107,8 +108,7 @@ def fetch_subscription(url: str, *, timeout: float = 20.0) -> str:
         # httpx renders the request URL into str(exc); the URL is the
         # credential, so only the exception type crosses into the message.
         raise AppError(
-            f"Could not fetch the subscription ({type(exc).__name__}). "
-            "Check the URL and your connection."
+            f"Could not fetch the subscription ({type(exc).__name__}). Check the URL and your connection."
         ) from None
     try:
         return raw.decode("utf-8")
