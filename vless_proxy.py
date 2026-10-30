@@ -14,6 +14,7 @@ keeps the two things that still have to work:
 There is deliberately no other code below this point. Anything added to this file
 is code that no longer has a test and no longer has an owner.
 """
+
 from __future__ import annotations
 
 from vlessp.cli import main
