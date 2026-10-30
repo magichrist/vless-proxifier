@@ -38,7 +38,9 @@ class ParseTests(unittest.TestCase):
         self.assertEqual([x["listen"] for x in config["inbounds"]], ["127.0.0.1", "127.0.0.1"])
 
     def test_insecure_requires_explicit_opt_in(self):
-        link = LINK.replace("allowInsecure=0&insecure=0&", "allowInsecure=1&insecure=1&").replace(f"&pcs={PIN}", "")
+        link = LINK.replace("allowInsecure=0&insecure=0&", "allowInsecure=1&insecure=1&").replace(
+            f"&pcs={PIN}", ""
+        )
         with self.assertRaises(AppError):
             parse_vless_uri(link)
         self.assertTrue(parse_vless_uri(link, allow_insecure=True)["allow_insecure"])
