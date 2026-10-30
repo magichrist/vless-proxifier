@@ -33,6 +33,7 @@ pretend that opening a form is a slow operation. The callback form pushes the
 screen synchronously, does no I/O, and gets the dismiss result delivered to the
 event loop when the modal closes.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -346,15 +347,9 @@ class VlessApp(App[None]):
         # stub or a future ProxyService that publishes them), then what the user
         # saved in the UI. The store is the authority otherwise, so the header
         # never disagrees with the ports the service is bound to.
-        self._socks_addr = (
-            socks_addr
-            or getattr(service, "socks_addr", None)
-            or store.listeners.socks
-        )
+        self._socks_addr = socks_addr or getattr(service, "socks_addr", None) or store.listeners.socks
         if isinstance(http_addr, _Unset):
-            self._http_addr: str | None = (
-                getattr(service, "http_addr", None) or store.listeners.http
-            )
+            self._http_addr: str | None = getattr(service, "http_addr", None) or store.listeners.http
         else:
             self._http_addr = http_addr or None
         self._xray_version = xray_version or getattr(service, "xray_version", None)
@@ -513,9 +508,7 @@ class VlessApp(App[None]):
                 pane_rows = max(1, height - reserved - MIN_TABLE_ROWS)
             pane.styles.height = pane_rows
             reserved += pane_rows
-        self.query_one(ProfileTable).styles.max_height = max(
-            MIN_TABLE_ROWS, height - reserved
-        )
+        self.query_one(ProfileTable).styles.max_height = max(MIN_TABLE_ROWS, height - reserved)
 
     # -- detail panel -----------------------------------------------------
 
@@ -726,9 +719,7 @@ class VlessApp(App[None]):
         succeeds, so the status bar never lies.
         """
         try:
-            restarted = self._service.set_listeners(
-                socks_addr=listeners.socks, http_addr=listeners.http
-            )
+            restarted = self._service.set_listeners(socks_addr=listeners.socks, http_addr=listeners.http)
         except Exception as exc:  # noqa: BLE001 — the worker must never leak to the loop
             self.call_from_thread(self._listeners_failed, _safe_message(exc))
             return
