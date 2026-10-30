@@ -3,6 +3,7 @@
 Fetch tests never touch the network: httpx.Client is monkeypatched with a
 fake that records how it was called and replays scripted responses.
 """
+
 from __future__ import annotations
 
 import base64
@@ -37,6 +38,7 @@ def _uri(
 
 
 # --- Fake httpx plumbing -----------------------------------------------------
+
 
 class _FakeResponse:
     """Mimics the slice of httpx.Response that fetch_subscription uses."""
@@ -115,9 +117,12 @@ def _run_fetch(outcome: Any, url: str = FAKE_SUB_URL) -> tuple[Any, dict[str, An
 
 # --- Parse tests -------------------------------------------------------------
 
+
 class TestParsePlain(unittest.TestCase):
     def test_multi_line_list_yields_count_labels_links(self) -> None:
-        body = "\n".join([_uri(fragment="one"), _uri(uuid=FAKE_UUID_2, host="two.example.com", port=8443, fragment="two")])
+        body = "\n".join(
+            [_uri(fragment="one"), _uri(uuid=FAKE_UUID_2, host="two.example.com", port=8443, fragment="two")]
+        )
         sub = parse(body)
         self.assertEqual(len(sub.nodes), 2)
         self.assertFalse(sub.was_base64)
@@ -199,6 +204,7 @@ class TestParseBase64(unittest.TestCase):
 
 # --- Fetch tests -------------------------------------------------------------
 
+
 class TestFetchValidation(unittest.TestCase):
     def test_rejects_http_without_touching_network(self) -> None:
         with mock.patch("httpx.Client") as client_cls:
@@ -246,6 +252,7 @@ class TestFetchValidation(unittest.TestCase):
 
 # --- Credential-leak tests ---------------------------------------------------
 
+
 class TestNoCredentialLeak(unittest.TestCase):
     def assertLeakFree(self, message: str) -> None:
         self.assertNotIn(FAKE_SUB_URL, message)
@@ -267,7 +274,9 @@ class TestNoCredentialLeak(unittest.TestCase):
         ]
         for name, outcome in cases:
             with self.subTest(case=name):
-                url = "http://subs.example.com/s/SECRET-SUB-TOKEN-9f8a7b6c" if name == "http" else FAKE_SUB_URL
+                url = (
+                    "http://subs.example.com/s/SECRET-SUB-TOKEN-9f8a7b6c" if name == "http" else FAKE_SUB_URL
+                )
                 result, _ = _run_fetch(outcome, url=url) if outcome is not None else (None, None)
                 if outcome is None:  # http-rejection path builds no fake
                     with mock.patch("httpx.Client"):
