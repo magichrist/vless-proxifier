@@ -16,6 +16,7 @@ Subscription nodes live here too (S4): a fetched node is an ordinary
 same split — store the link minus the UUID, put the UUID in the Keychain — so
 there is exactly one code path and one secret boundary to audit.
 """
+
 from __future__ import annotations
 
 import copy
@@ -237,12 +238,7 @@ class ReconcileResult:
     @property
     def changed(self) -> int:
         """Number of profiles this fetch altered (availability flags included)."""
-        return (
-            len(self.added)
-            + len(self.updated)
-            + len(self.restored)
-            + len(self.marked_unavailable)
-        )
+        return len(self.added) + len(self.updated) + len(self.restored) + len(self.marked_unavailable)
 
 
 def resolve_link(profile: Profile, secrets: SecretStore) -> dict[str, Any]:
