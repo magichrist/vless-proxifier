@@ -12,6 +12,7 @@ The contrast and registry tests import nothing but the standard library, so a
 palette regression is reported even in an environment where the full app cannot
 be constructed.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -139,7 +140,9 @@ class TestContrastMatrix(unittest.TestCase):
                     f"{role} {original} was expected to fail AA on {background}; "
                     "if the maths changed, re-read the comment in theme.py",
                 )
-                self.assertGreaterEqual(_contrast(getattr(THEMES["gummy"], role), background), AA_TEXT_CONTRAST)
+                self.assertGreaterEqual(
+                    _contrast(getattr(THEMES["gummy"], role), background), AA_TEXT_CONTRAST
+                )
 
 
 class TestPaletteCompleteness(unittest.TestCase):
@@ -238,12 +241,16 @@ class TestRegistry(unittest.TestCase):
         self.assertIn("textual-dark", THEME_ORDER, "the built-in must remain reachable")
 
     def test_the_cycle_order_is_a_permutation_without_repeats(self) -> None:
-        self.assertEqual(len(set(THEME_ORDER)), len(THEME_ORDER), "a repeated name would make the cycle stutter")
+        self.assertEqual(
+            len(set(THEME_ORDER)), len(THEME_ORDER), "a repeated name would make the cycle stutter"
+        )
 
     def test_every_non_builtin_in_the_cycle_is_actually_defined(self) -> None:
         for name in THEME_ORDER:
             with self.subTest(name=name):
-                self.assertTrue(name in THEMES or name == "textual-dark", f"{name} can be cycled to but never applied")
+                self.assertTrue(
+                    name in THEMES or name == "textual-dark", f"{name} can be cycled to but never applied"
+                )
 
     def test_the_builtin_is_not_duplicated_into_our_registry(self) -> None:
         """Re-shipping a built-in means shipping a copy that goes stale."""
