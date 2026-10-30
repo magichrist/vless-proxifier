@@ -12,6 +12,7 @@ produces a toast instead of a traceback, that a modal never hands a UUID to the
 store — those are the bugs that survive code review. Pixel layout is Textual's
 job, not ours.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -88,7 +89,9 @@ SUB_HTTP_URL = "http://feeds.example.invalid/sub?token=other-token-abc"
 
 def sample_link(uuid_value: str = TEST_UUID, **overrides: Any) -> dict[str, Any]:
     """A realistic parsed link, built by the real parser so it matches reality."""
-    link = parse_vless_uri(f"vless://{uuid_value}@203.0.113.10:2083?type=ws&security=tls&sni=example.com#home")
+    link = parse_vless_uri(
+        f"vless://{uuid_value}@203.0.113.10:2083?type=ws&security=tls&sni=example.com#home"
+    )
     link.update(overrides)
     return link
 
@@ -101,10 +104,7 @@ def link_without_uuid(uuid_value: str = TEST_UUID, **overrides: Any) -> dict[str
 
 
 def sample_uri(uuid_value: str = TEST_UUID, label: str = "home") -> str:
-    return (
-        f"vless://{uuid_value}@203.0.113.10:2083"
-        f"?type=ws&security=tls&sni=example.com#{label}"
-    )
+    return f"vless://{uuid_value}@203.0.113.10:2083?type=ws&security=tls&sni=example.com#{label}"
 
 
 class MemorySecretStore:
@@ -179,9 +179,7 @@ class StubProxyService:
     def connect(self, ref: str) -> Profile:
         with self._connects_lock:
             self._connects_in_flight += 1
-            self.max_concurrent_connects = max(
-                self.max_concurrent_connects, self._connects_in_flight
-            )
+            self.max_concurrent_connects = max(self.max_concurrent_connects, self._connects_in_flight)
         try:
             gate = self.connect_gate
             if gate is not None:
@@ -1165,7 +1163,9 @@ class TestHelpScreen(TuiTestCase):
         A stale key in the help screen is worse than a missing one: it teaches
         the user a shortcut that does not exist.
         """
-        bound = {key for binding in VlessApp.BINDINGS for key in (binding.key,) if not binding.key.startswith("^")}
+        bound = {
+            key for binding in VlessApp.BINDINGS for key in (binding.key,) if not binding.key.startswith("^")
+        }
         advertised = {key for _title, rows in HelpScreen.SECTIONS for key, _desc in rows}
         self.assertEqual(
             advertised - bound,
@@ -1239,7 +1239,9 @@ class TestAddressScreen(TuiTestCase):
         self.assertIn("hostname", str(screen.query_one("#error", Static).render()).lower())
         self.assertEqual(self.store.get(profile.id).link["server"], "203.0.113.10")
         self.assertIsInstance(self.app.screen, AddressScreen)
-        self.assertFalse(screen.query_one("#save", Button).disabled, "a refused save must not strand the user")
+        self.assertFalse(
+            screen.query_one("#save", Button).disabled, "a refused save must not strand the user"
+        )
 
     async def test_a_non_numeric_port_is_refused_before_the_store(self) -> None:
         await self.settle()
@@ -2239,13 +2241,12 @@ class TestTableBadging(TuiTestCase):
         # the table is a decision rather than an accident of never having been set.
         self.assertEqual(self.secrets.items[hand.id], TEST_UUID)
         self.assertEqual(self.secrets.items[imported.id], OTHER_UUID)
-        rendered = "\n".join(
-            [self._cells(hand.id)[0], self._cells(imported.id)[0], self._rendered()]
-        )
+        rendered = "\n".join([self._cells(hand.id)[0], self._cells(imported.id)[0], self._rendered()])
         for secret in (TEST_UUID, OTHER_UUID):
             self.assertNotIn(secret, rendered)
             self.assertNotIn(secret.replace("-", ""), rendered, "nor the unhyphenated form")
             self.assertNotIn(secret[:8], rendered, "nor any identifiable run of it")
+
 
 class TestLatencyGraphics(TuiTestCase):
     """LAT bars and the detail sparkline.
@@ -2444,9 +2445,7 @@ class TestNoSpuriousToasts(TuiTestCase):
         await self.settle()
 
         seen = await self._press_all("down down up o l alt+t h escape t")
-        self.assertEqual(
-            seen, [], f"navigation must be silent, got: {seen}"
-        )
+        self.assertEqual(seen, [], f"navigation must be silent, got: {seen}")
 
     async def test_an_empty_store_navigating_is_silent(self) -> None:
         """No rows is the normal transient state during a rebuild, not an error."""
@@ -2522,7 +2521,8 @@ class TestKeyHints(TuiTestCase):
             with self.subTest(tier=tier):
                 line = KeyHints().render_tier(tier).plain
                 self.assertLessEqual(
-                    len(line), minimum,
+                    len(line),
+                    minimum,
                     f"tier {tier} needs {len(line)} but claims {minimum}",
                 )
 
@@ -2532,9 +2532,7 @@ class TestKeyHints(TuiTestCase):
         for width in range(33, 160):
             with self.subTest(width=width):
                 line = hints.compose_hint(width).plain
-                self.assertLessEqual(
-                    len(line), width, f"{len(line)} cols into {width}"
-                )
+                self.assertLessEqual(len(line), width, f"{len(line)} cols into {width}")
 
     def test_the_widest_tier_is_chosen_when_there_is_room(self) -> None:
         """A 200-column terminal should get the readable layout, not the cramped one."""
@@ -2543,11 +2541,7 @@ class TestKeyHints(TuiTestCase):
 
     def test_every_bound_key_appears_in_every_tier(self) -> None:
         """Compression may shorten a label; it may never drop a key."""
-        bound = {
-            b.key
-            for b in VlessApp.BINDINGS
-            if b.show and not b.key.startswith("^")
-        }
+        bound = {b.key for b in VlessApp.BINDINGS if b.show and not b.key.startswith("^")}
         for tier in range(len(KeyHints.TIERS)):
             with self.subTest(tier=tier):
                 shown = KeyHints().render_tier(tier).plain.split()
