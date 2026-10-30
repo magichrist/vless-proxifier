@@ -1,4 +1,5 @@
 """Tests for vlessp.secrets — Keychain backend construction and secrecy."""
+
 from __future__ import annotations
 
 import subprocess
@@ -78,9 +79,7 @@ class TestArgvConstruction(unittest.TestCase):
 
     def test_get_argv(self) -> None:
         backend = MacOSKeychain()
-        with mock.patch(
-            "subprocess.run", return_value=completed(stdout=FAKE_SECRET + "\n")
-        ) as fake:
+        with mock.patch("subprocess.run", return_value=completed(stdout=FAKE_SECRET + "\n")) as fake:
             value = backend.get(FAKE_ACCOUNT)
         argv = fake.call_args[0][0]
         self.assertEqual(
