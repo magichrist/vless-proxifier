@@ -5,6 +5,7 @@ Xray, the Keychain, or the network directly. Everything slow happens in a
 ``@work(thread=True)`` worker; see :mod:`vlessp.tui.app` for the threading rules
 and :mod:`vlessp.tui.screens` for the credential-handling order.
 """
+
 from __future__ import annotations
 
 from vlessp.tui.app import VlessApp
