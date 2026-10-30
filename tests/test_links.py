@@ -8,6 +8,7 @@ IP literals, TLS verification on by default, no URI in any error message).
 
 Everything here is pure-function testing: no socket, no subprocess, no file.
 """
+
 import json
 import unittest
 
@@ -106,7 +107,11 @@ class QueryParamTests(unittest.TestCase):
     def test_insecure_alias_must_agree_and_be_boolean(self):
         self.assertEqual(query_params("insecure=1&allowInsecure=1")["insecure"], "1")
         self.assertEqual(query_params("insecure=yes&allowInsecure=true")["insecure"], "yes")
-        for query in ("insecure=1&allowInsecure=0", "insecure=0&allowInsecure=yes", "insecure=x&allowInsecure=y"):
+        for query in (
+            "insecure=1&allowInsecure=0",
+            "insecure=0&allowInsecure=yes",
+            "insecure=x&allowInsecure=y",
+        ):
             with self.subTest(query=query):
                 with self.assertRaises(AppError):
                     query_params(query)
@@ -178,7 +183,7 @@ class ParseTests(unittest.TestCase):
 
     def test_xhttp_extra_must_be_json_object(self):
         base = f"vless://{UUID}@example.com:443?security=tls&type=xhttp&sni=e.com"
-        for extra, in (("%7Bnotjson",), ("%5B1%2C2%5D",), ("%22text%22",)):
+        for (extra,) in (("%7Bnotjson",), ("%5B1%2C2%5D",), ("%22text%22",)):
             with self.subTest(extra=extra):
                 with self.assertRaises(AppError):
                     parse_vless_uri(f"{base}&extra={extra}")
@@ -186,7 +191,9 @@ class ParseTests(unittest.TestCase):
         self.assertNotIn("xhttp_extra", parse_vless_uri(base))
 
     def test_grpc_service_name_agrees_with_path(self):
-        agree = parse_vless_uri(f"vless://{UUID}@example.com:443?security=tls&type=grpc&serviceName=svc&path=%2Fsvc")
+        agree = parse_vless_uri(
+            f"vless://{UUID}@example.com:443?security=tls&type=grpc&serviceName=svc&path=%2Fsvc"
+        )
         self.assertEqual(agree["grpc_service"], "svc")
         from_path = parse_vless_uri(f"vless://{UUID}@example.com:443?security=tls&type=grpc&path=%2Fonlypath")
         self.assertEqual(from_path["grpc_service"], "onlypath")
@@ -201,8 +208,12 @@ class ParseTests(unittest.TestCase):
             parse_vless_uri(link)
 
     def test_grpc_multi_mode(self):
-        self.assertTrue(parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=grpc&multiMode=1")["grpc_multi_mode"])
-        self.assertFalse(parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=grpc")["grpc_multi_mode"])
+        self.assertTrue(
+            parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=grpc&multiMode=1")["grpc_multi_mode"]
+        )
+        self.assertFalse(
+            parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=grpc")["grpc_multi_mode"]
+        )
 
     def test_ws_headers_and_host_precedence(self):
         link = (
@@ -221,7 +232,9 @@ class ParseTests(unittest.TestCase):
                     parse_vless_uri(base + headers)
 
     def test_httpupgrade_fields(self):
-        result = parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=httpupgrade&path=%2Fu&host=h.example.com")
+        result = parse_vless_uri(
+            f"vless://{UUID}@e.com:443?security=tls&type=httpupgrade&path=%2Fu&host=h.example.com"
+        )
         self.assertEqual(result["httpupgrade_path"], "/u")
         self.assertEqual(result["httpupgrade_host"], "h.example.com")
 
@@ -236,7 +249,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(result["pins"], PIN)
 
     def test_colon_separated_pin_is_normalised(self):
-        colonised = ":".join(PIN[i:i + 2] for i in range(0, 64, 2))
+        colonised = ":".join(PIN[i : i + 2] for i in range(0, 64, 2))
         result = parse_vless_uri(WS_TLS_PIN.replace(PIN, colonised))
         self.assertEqual(result["pins"], PIN)
 
@@ -252,7 +265,9 @@ class ParseTests(unittest.TestCase):
     def test_encryption_defaults_to_none_but_may_not_be_empty(self):
         self.assertEqual(parse_vless_uri(f"vless://{UUID}@e.com:443?type=tcp")["encryption"], "none")
         self.assertEqual(
-            parse_vless_uri(f"vless://{UUID}@e.com:443?type=tcp&encryption=mlkem768x25519plus.native.0rtt")["encryption"],
+            parse_vless_uri(f"vless://{UUID}@e.com:443?type=tcp&encryption=mlkem768x25519plus.native.0rtt")[
+                "encryption"
+            ],
             "mlkem768x25519plus.native.0rtt",
         )
         with self.assertRaises(AppError):
@@ -270,7 +285,12 @@ class RejectionTests(unittest.TestCase):
             parse_vless_uri(link, allow_insecure=allow_insecure)
 
     def test_bad_uuid(self):
-        for uuid in ("not-a-uuid", "0123456789abcdef0123456789abcdef", f"{UUID}-x", "01234567-89ab-cdef-0123-456789abcde"):
+        for uuid in (
+            "not-a-uuid",
+            "0123456789abcdef0123456789abcdef",
+            f"{UUID}-x",
+            "01234567-89ab-cdef-0123-456789abcde",
+        ):
             with self.subTest(uuid=uuid):
                 self.assert_rejected(f"vless://{uuid}@e.com:443?type=tcp")
 
@@ -308,14 +328,22 @@ class RejectionTests(unittest.TestCase):
     def test_bad_flow(self):
         # Only the exact Vision flow is supported. A trailing-space variant is
         # trimmed by the URI-level strip() before parsing, so it is accepted.
-        for flow in ("xtls-rprx-origin", "xtls-rprx-vision-2", "xtls-rprx-visionX", "vision", "XTLS-RPRX-VISION"):
+        for flow in (
+            "xtls-rprx-origin",
+            "xtls-rprx-vision-2",
+            "xtls-rprx-visionX",
+            "vision",
+            "XTLS-RPRX-VISION",
+        ):
             with self.subTest(flow=flow):
                 self.assert_rejected(f"vless://{UUID}@e.com:443?security=tls&type=tcp&flow={flow}")
 
     def test_flow_requires_tcp(self):
         for transport in ("ws", "grpc", "xhttp", "httpupgrade"):
             with self.subTest(transport=transport):
-                self.assert_rejected(f"vless://{UUID}@e.com:443?security=tls&type={transport}&flow=xtls-rprx-vision")
+                self.assert_rejected(
+                    f"vless://{UUID}@e.com:443?security=tls&type={transport}&flow=xtls-rprx-vision"
+                )
 
     def test_oversized_link(self):
         self.assert_rejected("vless://" + UUID + "@e.com:443?type=tcp&pad=" + "x" * MAX_URI_BYTES)
@@ -332,7 +360,9 @@ class RejectionTests(unittest.TestCase):
         self.assert_rejected(f"vless://{UUID}:password@e.com:443?type=tcp")
 
     def test_invalid_insecure_value(self):
-        self.assert_rejected(f"vless://{UUID}@e.com:443?security=tls&allowInsecure=maybe", allow_insecure=True)
+        self.assert_rejected(
+            f"vless://{UUID}@e.com:443?security=tls&allowInsecure=maybe", allow_insecure=True
+        )
 
     def test_invalid_sni(self):
         self.assert_rejected(f"vless://{UUID}@e.com:443?security=tls&sni=-bad-.com")
@@ -340,7 +370,9 @@ class RejectionTests(unittest.TestCase):
 
 class TlsPolicyTests(unittest.TestCase):
     def test_insecure_is_refused_without_explicit_opt_in(self):
-        link = WS_TLS_PIN.replace("allowInsecure=0&insecure=0&", "allowInsecure=1&insecure=1&").replace(f"&pcs={PIN}", "")
+        link = WS_TLS_PIN.replace("allowInsecure=0&insecure=0&", "allowInsecure=1&insecure=1&").replace(
+            f"&pcs={PIN}", ""
+        )
         with self.assertRaises(AppError):
             parse_vless_uri(link)
         self.assertTrue(parse_vless_uri(link, allow_insecure=True)["allow_insecure"])
@@ -467,10 +499,14 @@ class ConfigTests(unittest.TestCase):
 
     def test_flow_is_passed_through_to_the_user(self):
         link = parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=tcp&flow=xtls-rprx-vision")
-        users = build_xray_config(link, "127.0.0.1:10808", None)["outbounds"][0]["settings"]["vnext"][0]["users"]
+        users = build_xray_config(link, "127.0.0.1:10808", None)["outbounds"][0]["settings"]["vnext"][0][
+            "users"
+        ]
         self.assertEqual(users[0]["flow"], "xtls-rprx-vision")
         without_flow = parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=tcp")
-        users = build_xray_config(without_flow, "127.0.0.1:10808", None)["outbounds"][0]["settings"]["vnext"][0]["users"]
+        users = build_xray_config(without_flow, "127.0.0.1:10808", None)["outbounds"][0]["settings"]["vnext"][
+            0
+        ]["users"]
         self.assertNotIn("flow", users[0])
 
     def test_tls_stream_settings(self):
@@ -509,7 +545,9 @@ class ConfigTests(unittest.TestCase):
         )
         with_spider = parse_vless_uri(REALITY.replace("#reality", "&spiderX=%2Fspider#reality"))
         self.assertEqual(
-            build_xray_config(with_spider, "127.0.0.1:10808", None)["outbounds"][0]["streamSettings"]["realitySettings"]["spiderX"],
+            build_xray_config(with_spider, "127.0.0.1:10808", None)["outbounds"][0]["streamSettings"][
+                "realitySettings"
+            ]["spiderX"],
             "/spider",
         )
 
@@ -529,18 +567,31 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(stream, {"network": "tcp", "security": "none"})
 
     def test_transport_specific_stream_settings(self):
-        grpc = parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=grpc&serviceName=svc&authority=a.example")
+        grpc = parse_vless_uri(
+            f"vless://{UUID}@e.com:443?security=tls&type=grpc&serviceName=svc&authority=a.example"
+        )
         stream = build_xray_config(grpc, "127.0.0.1:10808", None)["outbounds"][0]["streamSettings"]
-        self.assertEqual(stream["grpcSettings"], {"serviceName": "svc", "multiMode": False, "authority": "a.example"})
+        self.assertEqual(
+            stream["grpcSettings"], {"serviceName": "svc", "multiMode": False, "authority": "a.example"}
+        )
 
-        upgrade = parse_vless_uri(f"vless://{UUID}@e.com:443?security=tls&type=httpupgrade&path=%2Fu&host=h.example")
+        upgrade = parse_vless_uri(
+            f"vless://{UUID}@e.com:443?security=tls&type=httpupgrade&path=%2Fu&host=h.example"
+        )
         stream = build_xray_config(upgrade, "127.0.0.1:10808", None)["outbounds"][0]["streamSettings"]
         self.assertEqual(stream["httpupgradeSettings"], {"path": "/u", "host": "h.example"})
 
-        stream = build_xray_config(parse_vless_uri(XHTTP_EXTRA), "127.0.0.1:10808", None)["outbounds"][0]["streamSettings"]
+        stream = build_xray_config(parse_vless_uri(XHTTP_EXTRA), "127.0.0.1:10808", None)["outbounds"][0][
+            "streamSettings"
+        ]
         self.assertEqual(
             stream["xhttpSettings"],
-            {"path": "/dl", "host": "cdn.example.com", "mode": "auto", "extra": {"scMaxEachBufferBytes": 1048576}},
+            {
+                "path": "/dl",
+                "host": "cdn.example.com",
+                "mode": "auto",
+                "extra": {"scMaxEachBufferBytes": 1048576},
+            },
         )
 
     def test_config_is_pure_and_deterministic(self):
@@ -594,7 +645,11 @@ class MessageSafetyTests(unittest.TestCase):
 
     def test_no_failure_message_discloses_the_link_from_config_generation(self):
         parsed = parse_vless_uri(WS_TLS_PIN)
-        for socks, http in (("0.0.0.0:10808", None), ("127.0.0.1", None), ("example.com:10808", "8.8.8.8:10809")):
+        for socks, http in (
+            ("0.0.0.0:10808", None),
+            ("127.0.0.1", None),
+            ("example.com:10808", "8.8.8.8:10809"),
+        ):
             with self.subTest(socks=socks):
                 try:
                     build_xray_config(parsed, socks, http)
