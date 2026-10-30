@@ -44,10 +44,10 @@ working untouched.
 ```python
 @dataclass(frozen=True)
 class Profile:
-    id: str                 # uuid4 hex, also the Keychain account name
-    label: str              # human name, defaults to the link fragment
-    link: dict[str, Any]    # parsed link, MINUS uuid
-    last_latency_ms: int | None = None   # cache, overwritten by "test all"
+    id: str  # uuid4 hex, also the Keychain account name
+    label: str  # human name, defaults to the link fragment
+    link: dict[str, Any]  # parsed link, MINUS uuid
+    last_latency_ms: int | None = None  # cache, overwritten by "test all"
 ```
 
 `link` is exactly the dict `parse_vless_uri` already returns. It is JSON-serializable by
@@ -68,7 +68,7 @@ Resolution is the inverse, in exactly one place:
 ```python
 def resolve_link(profile, secrets) -> dict:
     link = dict(profile.link)
-    link["uuid"] = secrets.get(profile.id)   # raises AppError if missing
+    link["uuid"] = secrets.get(profile.id)  # raises AppError if missing
     return link
 ```
 
