@@ -27,6 +27,7 @@ place that pairs a message with its tail, and both link and profile mode go thro
 *which* Xray binary, and *which* ports everything else gets. ``ProxyService`` and the TUI take
 their dependencies as constructor arguments and never go looking for them.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -76,9 +77,7 @@ _VERSION_TAG_RE = re.compile(r"^v\d+\.\d+")
 # never reach a terminal unfiltered -- Xray prints config fragments on some parse
 # errors, which is exactly how the UUID would escape.
 _URI_IN_TEXT_RE = re.compile(r"(?i)vless://\S+")
-_UUID_IN_TEXT_RE = re.compile(
-    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
-)
+_UUID_IN_TEXT_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 
 _warned_no_keychain = False
 
@@ -138,16 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--socks",
         default=None,
         help=(
-            "SOCKS5 listen address HOST:PORT (default 127.0.0.1:10808; "
-            "overrides the address saved in the UI)"
+            "SOCKS5 listen address HOST:PORT (default 127.0.0.1:10808; overrides the address saved in the UI)"
         ),
     )
     parser.add_argument(
         "--http",
         default=None,
         help=(
-            "HTTP listen address HOST:PORT (default 127.0.0.1:10809; "
-            "overrides the address saved in the UI)"
+            "HTTP listen address HOST:PORT (default 127.0.0.1:10809; overrides the address saved in the UI)"
         ),
     )
     parser.add_argument("--no-http", action="store_true", help="disable the HTTP proxy listener")
@@ -194,8 +191,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             raise AppError("--profile cannot be combined with --link or --link-file.")
     if args.check and args.profile:
         raise AppError(
-            "--check cannot be combined with --profile; "
-            "it validates a link from --link or --link-file."
+            "--check cannot be combined with --profile; it validates a link from --link or --link-file."
         )
     if args.check and args.list_profiles:
         raise AppError("--check cannot be combined with --list.")
@@ -381,9 +377,7 @@ def _import_one_subscription(name: str, store: ProfileStore, secrets: SecretStor
         url = secrets.get(account)
     except AppError:
         if not sys.stdin.isatty():
-            raise AppError(
-                f"subscription {name} has no stored URL; add it interactively first."
-            ) from None
+            raise AppError(f"subscription {name} has no stored URL; add it interactively first.") from None
         print(f"Paste the subscription URL for {name} (it is stored in the Keychain).")
         typed = input("> ").strip()
         if not typed.lower().startswith("https://"):
@@ -448,9 +442,7 @@ def _run_profile(args: argparse.Namespace) -> int:
     try:
         resolved = store.resolve(args.profile)
     except AppError:
-        raise AppError(
-            "no saved profile matches that reference; run --list to see what is saved."
-        ) from None
+        raise AppError("no saved profile matches that reference; run --list to see what is saved.") from None
     xray = resolve_xray(args.xray, update=args.update_xray)
     print(f"Using Xray executable: {xray}")
     service = ProxyService(store, secrets, xray, socks_addr=socks, http_addr=http_addr)
@@ -738,8 +730,7 @@ def _read_link_source(args: argparse.Namespace) -> str:
             raise AppError("Could not read the VLESS link file as UTF-8 text.") from None
     if args.link:
         print(
-            "Warning: --link may be visible to local process inspection; "
-            "use --link-file for privacy.",
+            "Warning: --link may be visible to local process inspection; use --link-file for privacy.",
             file=sys.stderr,
         )
         return args.link
