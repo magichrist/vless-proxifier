@@ -7,6 +7,7 @@ VLESS UUID) lives here, one generic-password item per profile, so that
 Why the ``security`` CLI instead of a binding: it is present on every macOS,
 needs no new dependency, and keeps this module stdlib-only.
 """
+
 from __future__ import annotations
 
 import subprocess
